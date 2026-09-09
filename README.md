@@ -24,10 +24,14 @@ Every 30 minutes, on a GitHub Actions cron:
 3. Classifies what is left. Only **genuine** human enquiries earn a reply;
    spam, newsletters, automated mail and personal mail are filed in silence.
 4. Drafts a reply and extracts what the message revealed about the enquiry.
-5. Vets the draft. Anything naming a price, promising a date, guaranteeing an
+5. Offers three genuinely-free times for the intro call, read live from Google
+   Calendar, spread across different days.
+6. Vets the draft. Anything naming a price, promising a date, guaranteeing an
    outcome or leaking model scaffolding is **blocked and held for a human**.
-6. Sends, threaded onto the original conversation.
-7. Scores the lead, writes it to the store, rebuilds the dashboard, pushes.
+7. Sends, threaded onto the original conversation.
+8. When the client picks a time, re-checks it is still free, books it, and
+   attaches an `.ics` invitation.
+9. Scores the lead, writes it to the store, rebuilds the dashboard, pushes.
 
 Every message ends in one of four places, and the run log says which:
 
@@ -60,9 +64,46 @@ both implicit TLS, authenticating with the full address as the username.
 | `OPENAI_API_KEY` | An OpenAI API key |
 | `DATARAIL_MAIL_PASSWORD` | The mailbox password |
 | `DATARAIL_SITE_TOKEN` | A fine-grained PAT with **Contents: read and write** on `fvtale/datarail-site`, and nothing else |
+| `GOOGLE_SERVICE_ACCOUNT_JSON` | Optional. The whole downloaded service-account key file, pasted in. Without it the agent still answers and qualifies, it just never offers a time |
 
 `DATARAIL_SITE_TOKEN` is needed because the default `GITHUB_TOKEN` cannot reach
 another repository. Scope it to that one repo only.
+
+### 2b. Google Calendar, for booking
+
+Four steps, once:
+
+1. In the [Google Cloud console](https://console.cloud.google.com), create a
+   project and **enable the Google Calendar API**.
+2. Create a **service account**, then create a **JSON key** for it and
+   download it. Paste the entire file into `GOOGLE_SERVICE_ACCOUNT_JSON`.
+3. Open that file and copy the `client_email` — something like
+   `datarail-agent@your-project.iam.gserviceaccount.com`.
+4. In Google Calendar → Settings → the calendar you want booked → **Share with
+   specific people** → add that address with **Make changes to events**.
+
+Step 4 is the one people miss. A service account has no calendar of its own;
+it can only reach yours because you shared it. If `doctor` reports the calendar
+returned an error, that share is almost always why.
+
+Then set `GOOGLE_CALENDAR_ID` to the calendar's ID (your email address for the
+main one, or the ID shown in that calendar's settings). It defaults to
+`primary`, which for a service account is its own empty calendar — so set it.
+
+Booking behaviour is tunable by variable: `DATARAIL_TIMEZONE`
+(default `America/New_York`), `BOOKING_SLOT_MINUTES` (30),
+`BOOKING_BUFFER_MINUTES` (15), `BOOKING_MIN_NOTICE_HOURS` (12),
+`BOOKING_HORIZON_DAYS` (14), `BOOKING_SLOTS_TO_OFFER` (3).
+
+**Availability is all hours by default** — your calendar's own free/busy is the
+only constraint, so a 4am slot can be offered if you are free at 4am. To keep
+it to working hours set `BOOKING_EARLIEST_HOUR` and `BOOKING_LATEST_HOUR`
+(e.g. `9` and `17`); nothing else changes.
+
+The agent creates the event with **no attendees** and emails the `.ics` itself.
+Google blocks service accounts from adding attendees without domain-wide
+delegation, and this way the invitation arrives from `contact@datarail.org`
+rather than from Google.
 
 **Settings → Secrets and variables → Actions → Variables** (all optional):
 

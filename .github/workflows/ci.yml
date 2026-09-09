@@ -41,7 +41,7 @@ jobs:
         # Catches syntax errors and bad imports in the paths tests do not
         # reach, such as the SMTP and IMAP code.
         run: |
-          python -c "import datarail_agents, datarail_agents.core.config, datarail_agents.core.leads, datarail_agents.core.policy, datarail_agents.core.knowledge, datarail_agents.core.brain, datarail_agents.email_agent.mailbox, datarail_agents.email_agent.run; print('all modules import')"
+          python -c "import datarail_agents, datarail_agents.core.config, datarail_agents.core.leads, datarail_agents.core.policy, datarail_agents.core.knowledge, datarail_agents.core.brain, datarail_agents.core.calendar, datarail_agents.core.booking, datarail_agents.email_agent.mailbox, datarail_agents.email_agent.run; print('all modules import')"
 
       - name: Test
         run: python -m pytest -q
@@ -79,14 +79,43 @@ jobs:
               "interactions": [{"at": "2026-09-09T11:00:00+00:00", "source": "email",
                 "direction": "in", "subject": "Booking form", "body": "Can you build one?",
                 "message_id": "<x@y>"}],
-              "thread_ids": ["<x@y>"]
+              "thread_ids": ["<x@y>"],
+              "booking": {"status": "booked",
+                "slot": {"start": "2026-09-15T18:00:00+00:00", "end": "2026-09-15T18:30:00+00:00"},
+                "offered_slots": [], "offered_at": "2026-09-09T11:05:00+00:00",
+                "event_id": "evt_1", "booked_at": "2026-09-09T12:00:00+00:00"}
             }]
           }
           JSON
           python dashboard/build.py --site /tmp/site2
           grep -q "Sam Reed" /tmp/site2/public/leads/index.html
           grep -q "qualified" /tmp/site2/public/leads/index.html
-          echo "populated dashboard renders"
+          grep -q "Intro call booked" /tmp/site2/public/leads/index.html
+          echo "populated dashboard renders, with the booking"
+
+      - name: A lead written before booking existed still loads
+        # The store predates the booking field. Older rows must not crash the
+        # dashboard or the agent.
+        run: |
+          mkdir -p /tmp/site3/leads
+          cat > /tmp/site3/leads/data.json <<'JSON'
+          {"schema_version": 1, "generated_at": "2026-09-09T12:00:00+00:00", "count": 1,
+           "leads": [{"id": "old1", "created_at": "2026-09-01T00:00:00+00:00",
+            "updated_at": "2026-09-01T00:00:00+00:00", "source": "email",
+            "contact": {"name": "Old Lead", "email": "old@example.com", "phone": "", "company": ""},
+            "summary": "From before booking existed.", "score": 25, "status": "qualifying",
+            "open_questions": [], "interactions": [], "thread_ids": []}]}
+          JSON
+          python dashboard/build.py --site /tmp/site3
+          grep -q "Old Lead" /tmp/site3/public/leads/index.html
+          python -c "
+          from datarail_agents.core.leads import LeadStore
+          store = LeadStore.open('/tmp/site3/leads/data.json')
+          lead = store.leads[0]
+          assert lead.booking.status == 'none', lead.booking
+          store.save()
+          print('legacy lead round-trips with a default booking')
+          "
 
       - name: Raw lead data never lands in the served directory
         # The store is deliberately outside public/ so it cannot be fetched

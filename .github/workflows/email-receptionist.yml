@@ -120,6 +120,9 @@ jobs:
           DATARAIL_MAIL_ADDRESS: ${{ vars.DATARAIL_MAIL_ADDRESS }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
           OPENAI_CLASSIFIER_MODEL: ${{ vars.OPENAI_CLASSIFIER_MODEL }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_CALENDAR_ID: ${{ vars.GOOGLE_CALENDAR_ID }}
+          DATARAIL_TIMEZONE: ${{ vars.DATARAIL_TIMEZONE }}
         run: python -m datarail_agents.email_agent.run --doctor --site site
 
       - name: Run the receptionist
@@ -130,6 +133,9 @@ jobs:
           DATARAIL_MAIL_ADDRESS: ${{ vars.DATARAIL_MAIL_ADDRESS }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
           OPENAI_CLASSIFIER_MODEL: ${{ vars.OPENAI_CLASSIFIER_MODEL }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_CALENDAR_ID: ${{ vars.GOOGLE_CALENDAR_ID }}
+          DATARAIL_TIMEZONE: ${{ vars.DATARAIL_TIMEZONE }}
           DATARAIL_DISCLOSE_AGENT: ${{ vars.DATARAIL_DISCLOSE_AGENT }}
           DATARAIL_MAX_SENDS_PER_RUN: ${{ vars.DATARAIL_MAX_SENDS_PER_RUN }}
         run: python -m datarail_agents.email_agent.run --site site ${{ steps.mode.outputs.flag }}

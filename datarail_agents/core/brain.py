@@ -53,6 +53,11 @@ class Draft:
     summary: str = ""
     open_questions: list | None = None
 
+    # Which of the offered times the client picked, 1-based, or 0 for none.
+    # The model only ever sees times the agent actually offered, so this can
+    # be trusted as an index rather than parsed out of free text.
+    chosen_slot: int = 0
+
     def __post_init__(self):
         if self.open_questions is None:
             self.open_questions = []
@@ -191,6 +196,10 @@ class Brain:
         knowledge: str,
         operator_name: str,
         signature_name: str,
+        offer_text: str = "",
+        booking_state: str = "none",
+        booked_when: str = "",
+        conflict: bool = False,
     ) -> Draft:
         """Write the reply and extract what the message revealed.
 
@@ -224,7 +233,8 @@ class Brain:
             "exclamation marks, no marketing language, no 'I hope this email "
             "finds you well'. Short paragraphs. Under 200 words.\n"
             "Sign off as " + signature_name + ".\n\n"
-            "WHAT DATARAIL DOES\n" + knowledge + "\n\n"
+            + _booking_instructions(offer_text, booking_state, booked_when, conflict)
+            + "WHAT DATARAIL DOES\n" + knowledge + "\n\n"
             "Answer only with JSON:\n"
             "{\n"
             '  "subject": "reply subject line",\n'
@@ -233,7 +243,8 @@ class Brain:
             '  "company": "", "need": "", "scope": "", "budget": "",\n'
             '  "timeline": "", "decision_maker": "",\n'
             '  "summary": "one sentence on who this is and what they want",\n'
-            '  "open_questions": ["what is still unknown"]\n'
+            '  "open_questions": ["what is still unknown"],\n'
+            '  "chosen_slot": 0\n'
             "}\n"
             "Extraction fields carry what you now know from the whole "
             "conversation, not just this message. Leave a field empty rather "
@@ -271,4 +282,66 @@ class Brain:
             decision_maker=str(result.get("decision_maker", "") or "").strip(),
             summary=str(result.get("summary", "") or "").strip(),
             open_questions=[str(item) for item in questions][:5],
+            chosen_slot=_as_index(result.get("chosen_slot")),
         )
+
+
+def _as_index(value) -> int:
+    """Coerce chosen_slot to a plain int, defaulting to 0 for anything odd.
+
+    Models return "2", 2, 2.0 and null for this. Zero means no slot chosen,
+    which is the safe reading of anything unparseable.
+    """
+    try:
+        index = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return index if index > 0 else 0
+
+
+def _booking_instructions(
+    offer_text: str, booking_state: str, booked_when: str, conflict: bool
+) -> str:
+    """The booking half of the system prompt, which changes every turn."""
+    if booking_state == "booked":
+        return (
+            "THE CALL IS ALREADY BOOKED\n"
+            "This client is confirmed for " + booked_when + ". Do not offer any "
+            "other times and do not imply it is unconfirmed. If they are asking "
+            "to move or cancel it, say Lynette will sort that out directly -- you "
+            "cannot reschedule. Set chosen_slot to 0.\n\n"
+        )
+
+    if conflict:
+        return (
+            "THE TIME THEY PICKED HAS GONE\n"
+            "They chose a time that was taken before their reply arrived. "
+            "Apologise briefly and plainly -- no grovelling -- and offer these "
+            "instead:\n\n" + offer_text + "\n\n"
+            "Set chosen_slot to 0. They have not chosen from this new list yet.\n\n"
+        )
+
+    if not offer_text:
+        return (
+            "NO TIMES ARE AVAILABLE TO OFFER\n"
+            "You cannot see the calendar this turn. Do not invent times and do "
+            "not promise a specific day. Say the next step is a free intro call "
+            "of about thirty minutes and that Lynette will follow up with some "
+            "times. Set chosen_slot to 0.\n\n"
+        )
+
+    return (
+        "BOOKING THE INTRO CALL\n"
+        "The next step for a real enquiry is a free intro call, about thirty "
+        "minutes, and these times are genuinely free:\n\n" + offer_text + "\n\n"
+        "Offer them exactly as written, numbered, keeping the timezone on each "
+        "one -- the client may not be in it. Do not invent, round or reword a "
+        "time, and never offer one that is not on this list.\n\n"
+        "If this message is the client accepting one of them, set chosen_slot "
+        "to its number and write the reply as a confirmation: say it is in the "
+        "diary and that a calendar invitation is attached. If they are asking "
+        "for a different time entirely, set chosen_slot to 0 and say Lynette "
+        "will find something that works.\n"
+        "If they have not mentioned times at all, set chosen_slot to 0 and "
+        "offer the list.\n\n"
+    )

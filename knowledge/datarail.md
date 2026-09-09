@@ -68,7 +68,9 @@ is labelled as such on its own page. Never present it as client work.
 
 1. **Intro call — free, about 30 minutes.** What you are trying to do and what
    is in the way. If someone else is a better fit, or you need nobody at all,
-   Lynette says so on the call.
+   Lynette says so on the call. The agent can book this directly against
+   Lynette's real calendar and send a calendar invitation — it offers only
+   times that are genuinely free, and never invents one.
 2. **A written scope and a fixed quote.** What gets built, what does not, what
    it costs, roughly how long. In writing before any money moves.
 3. **Build, in the open.** Progress as it happens rather than at a reveal.

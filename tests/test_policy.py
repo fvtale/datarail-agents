@@ -113,6 +113,20 @@ class TestReplyVetting:
         assert not policy.vet_reply("Our rate is competitive for this kind of work.")
         assert not policy.vet_reply("We charge by the day for discovery work.")
         assert not policy.vet_reply("That is 95 per hour.")
+        assert not policy.vet_reply("Works out at 95 an hour.")
+        assert not policy.vet_reply("Around 1200/week for a retainer.")
+
+    def test_booking_replies_are_not_mistaken_for_pricing(self):
+        # Regression: an earlier money pattern matched "an hour" followed by
+        # any digit within twenty characters, so every reply confirming a call
+        # was blocked on the date. Booking is the agent's whole job here.
+        for body in (
+            "The call is about half an hour. Tuesday 14 October at 2:00 PM ET suits me.",
+            "It runs half an hour, and I have 3 slots free next week.",
+            "Half an hour is plenty. Shall we say Monday 6 October, 9:00 AM?",
+        ):
+            verdict = policy.vet_reply(body)
+            assert verdict, body + " -> " + verdict.reason
 
     def test_pointing_at_the_quote_process_is_fine(self):
         # This is the correct answer to a pricing question and must not trip

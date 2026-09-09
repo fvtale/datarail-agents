@@ -104,9 +104,76 @@ class BrainConfig:
 
 
 @dataclass(frozen=True)
+class CalendarConfig:
+    """Google Calendar, for booking the free intro call.
+
+    Authenticated as a service account rather than through OAuth, because this
+    runs on a cron with nobody present to click a consent screen. The service
+    account reaches a personal calendar by being given access to it directly:
+    Google Calendar > Settings > the calendar > Share with specific people >
+    add the service account's client_email with "Make changes to events".
+
+    Note the service account does NOT invite the client. Google blocks service
+    accounts from adding attendees without domain-wide delegation, so the agent
+    emails the .ics itself over the SMTP connection it already has -- which also
+    means the invite arrives from contact@datarail.org rather than from Google.
+    """
+
+    service_account_json: str
+    calendar_id: str = "primary"
+
+    # Where the agent thinks it lives. Slots are generated and described in
+    # this zone, and every proposal states it, since the client may not share
+    # it. 718 and the NYC campaign make Eastern the sensible default.
+    timezone: str = "America/New_York"
+
+    slot_minutes: int = 30
+    # Gap left after a call, so two bookings cannot land back to back.
+    buffer_minutes: int = 15
+    # Nothing may be offered sooner than this: a client should not open their
+    # mail to a call starting in ten minutes.
+    min_notice_hours: int = 12
+    # How far ahead to look for free time.
+    horizon_days: int = 14
+    # How many times to offer at once. Three is enough to feel accommodating
+    # and few enough to answer without a calendar app open.
+    slots_to_offer: int = 3
+    # How long an offer stands before the slots are considered stale and are
+    # regenerated against a fresh read of the calendar.
+    offer_expiry_hours: int = 72
+
+    # "All hours" -- the calendar's own free/busy is the only constraint, as
+    # asked for. Set BOOKING_EARLIEST_HOUR / BOOKING_LATEST_HOUR to narrow it
+    # to working hours later; the slot generator reads these and nothing else
+    # changes.
+    earliest_hour: int = 0
+    latest_hour: int = 24
+
+    @classmethod
+    def load(cls) -> CalendarConfig:
+        return cls(
+            service_account_json=_require("GOOGLE_SERVICE_ACCOUNT_JSON"),
+            calendar_id=os.environ.get("GOOGLE_CALENDAR_ID", "primary").strip(),
+            timezone=os.environ.get("DATARAIL_TIMEZONE", "America/New_York").strip(),
+            slot_minutes=int(os.environ.get("BOOKING_SLOT_MINUTES", "30")),
+            buffer_minutes=int(os.environ.get("BOOKING_BUFFER_MINUTES", "15")),
+            min_notice_hours=int(os.environ.get("BOOKING_MIN_NOTICE_HOURS", "12")),
+            horizon_days=int(os.environ.get("BOOKING_HORIZON_DAYS", "14")),
+            slots_to_offer=int(os.environ.get("BOOKING_SLOTS_TO_OFFER", "3")),
+            earliest_hour=int(os.environ.get("BOOKING_EARLIEST_HOUR", "0")),
+            latest_hour=int(os.environ.get("BOOKING_LATEST_HOUR", "24")),
+        )
+
+
+@dataclass(frozen=True)
 class Config:
     mailbox: MailboxConfig
     brain: BrainConfig
+
+    # Optional. Without Google credentials the agent still answers and still
+    # qualifies -- it simply never offers a time, and says Lynette will follow
+    # up with some. Booking is an enhancement, not a dependency.
+    calendar: CalendarConfig | None = None
 
     # Where the lead store and dashboard are written. On Actions this is a
     # checkout of datarail-site; at home it is a working copy of the same repo.
@@ -149,6 +216,12 @@ class Config:
         return cls(
             mailbox=MailboxConfig.load(),
             brain=BrainConfig.load(),
+            # Absent credentials mean booking is off, not that the run fails.
+            calendar=(
+                CalendarConfig.load()
+                if os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
+                else None
+            ),
             site_root=os.environ.get("DATARAIL_SITE_ROOT", "site").strip(),
             # Dry run defaults to ON. Sending is something you turn on
             # deliberately, not something you forget to turn off.

@@ -24,8 +24,10 @@ import sys
 import traceback
 from datetime import datetime, timezone
 
+from ..core import booking as booking_flow
 from ..core import knowledge, policy
 from ..core.brain import Brain, BrainError
+from ..core.calendar import Calendar, CalendarError, ics_for
 from ..core.config import Config, ConfigError
 from ..core.leads import Contact, Interaction, LeadStore
 from .mailbox import InboundMessage, Mailbox
@@ -59,7 +61,16 @@ class Runner:
         self.brain = Brain(config.brain)
         self.knowledge = knowledge.load()
         self.sends_this_run = 0
-        self.results = {"replied": [], "review": [], "ignored": [], "error": []}
+        self.results = {"replied": [], "review": [], "ignored": [], "error": [], "booked": []}
+
+        # Booking is optional. If the calendar cannot be constructed the agent
+        # still answers and still qualifies -- it just never offers a time.
+        self.calendar = None
+        if config.calendar:
+            try:
+                self.calendar = Calendar(config.calendar)
+            except CalendarError as error:
+                log("  calendar unavailable, booking disabled: " + str(error))
 
     # ------------------------------------------------------------------
 
@@ -154,18 +165,26 @@ class Runner:
             message_id=message.message_id,
         ))
 
-        draft = self.brain.draft(
-            sender=message.sender_email,
-            subject=message.subject,
-            body=message.body,
-            history=self._history_for(lead),
-            known=self._known_for(lead),
-            knowledge=self.knowledge,
-            operator_name=self.config.operator_name,
-            signature_name=self.config.signature_name,
-        )
+        offer = self._offer_for(lead)
+        draft = self._draft(lead, message, offer)
 
         self._apply_extraction(lead, draft)
+
+        # If they picked a time, book it before the reply goes out -- the reply
+        # says the call is confirmed, so it must be true by the time it sends.
+        ics = ""
+        if draft.chosen_slot and self.calendar and self.config.calendar:
+            slot, draft, offer = self._book(lead, message, draft, offer)
+            if slot is not None:
+                ics = ics_for(
+                    slot=slot,
+                    summary="DataRail intro call",
+                    description=booking_flow.invite_text(lead, slot, self.config.calendar),
+                    organiser_email=self.config.mailbox.address,
+                    client_email=lead.contact.email or message.sender_email,
+                    client_name=lead.contact.name or message.sender_name,
+                    tz_name=self.config.calendar.timezone,
+                )
 
         body = draft.body
         if self.config.disclose_agent:
@@ -201,9 +220,10 @@ class Runner:
             body=body,
             in_reply_to=message.message_id,
             references=message.references,
+            ics=ics,
         )
         self.sends_this_run += 1
-        log("    replied: " + subject)
+        log("    replied: " + subject + (" (+invite)" if ics else ""))
 
         lead.add_interaction(Interaction(
             at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -217,6 +237,94 @@ class Runner:
         self.results["replied"].append({"from": who, "subject": subject, "score": lead.score})
 
     # ------------------------------------------------------------------
+
+    def _offer_for(self, lead):
+        """The times to put in front of this lead, if any.
+
+        Reuses a standing offer so the numbering the client is replying to
+        still means what it meant. Only generates a fresh set when there is
+        nothing live to reuse.
+        """
+        if not self.calendar or not self.config.calendar:
+            return booking_flow.Offer(slots=[], descriptions=[])
+
+        if lead.booking.status == "booked":
+            return booking_flow.Offer(slots=[], descriptions=[])
+
+        standing = booking_flow.current_offer(lead, self.config.calendar)
+        if not standing.is_empty():
+            return standing
+
+        fresh = booking_flow.make_offer(self.calendar, lead, self.config.calendar)
+        if fresh.is_empty():
+            log("    no free slots to offer")
+        return fresh
+
+    def _draft(self, lead, message: InboundMessage, offer, conflict: bool = False):
+        booked_when = ""
+        if lead.booking.status == "booked" and self.config.calendar:
+            from ..core.calendar import Slot, describe
+
+            try:
+                booked_when = describe(
+                    Slot.from_iso(lead.booking.slot), self.config.calendar.timezone
+                )
+            except (KeyError, ValueError):
+                booked_when = "a time already in the diary"
+
+        return self.brain.draft(
+            sender=message.sender_email,
+            subject=message.subject,
+            body=message.body,
+            history=self._history_for(lead),
+            known=self._known_for(lead),
+            knowledge=self.knowledge,
+            operator_name=self.config.operator_name,
+            signature_name=self.config.signature_name,
+            offer_text=offer.numbered(),
+            booking_state=lead.booking.status,
+            booked_when=booked_when,
+            conflict=conflict,
+        )
+
+    def _book(self, lead, message: InboundMessage, draft, offer):
+        """Book the chosen slot, or recover if it has gone.
+
+        Returns (slot, draft, offer). A None slot means nothing was booked and
+        the draft has been rewritten so it does not claim otherwise.
+        """
+        if self.config.dry_run:
+            log("    would book slot " + str(draft.chosen_slot))
+            return None, draft, offer
+
+        try:
+            slot = booking_flow.confirm(
+                self.calendar, lead, self.config.calendar, draft.chosen_slot
+            )
+        except booking_flow.BookingError as error:
+            log("    could not book: " + str(error))
+
+            # The draft in hand confirms a call that is not happening, so it
+            # cannot be sent. Offer fresh times and write the reply again --
+            # one extra model call on a path that should be rare.
+            lead.booking.status = "none"
+            replacement = booking_flow.make_offer(
+                self.calendar, lead, self.config.calendar
+            )
+            redraft = self._draft(lead, message, replacement, conflict=True)
+            self._apply_extraction(lead, redraft)
+            self.results["booked"].append({
+                "from": lead.contact.email, "outcome": "conflict", "reason": str(error),
+            })
+            return None, redraft, replacement
+
+        log("    BOOKED: " + slot.start.isoformat())
+        self.results["booked"].append({
+            "from": lead.contact.email,
+            "outcome": "confirmed",
+            "at": slot.start.isoformat(),
+        })
+        return slot, draft, offer
 
     def _file(self, mailbox: Mailbox, message: InboundMessage, folder: str) -> None:
         """Mark handled and move out of INBOX.
@@ -311,7 +419,11 @@ class Runner:
 
     def _summarise(self) -> None:
         log("")
+        confirmed = sum(
+            1 for item in self.results["booked"] if item.get("outcome") == "confirmed"
+        )
         log("Replied " + str(len(self.results["replied"]))
+            + " | booked " + str(confirmed)
             + " | held for review " + str(len(self.results["review"]))
             + " | ignored " + str(len(self.results["ignored"]))
             + " | errors " + str(len(self.results["error"])))
@@ -410,6 +522,23 @@ def _doctor(config: Config, site_root: str) -> int:
     except Exception as error:  # noqa: BLE001
         ok = False
         log("  FAIL: " + str(error))
+
+    log("Calendar")
+    if not config.calendar:
+        log("  off: GOOGLE_SERVICE_ACCOUNT_JSON is not set, so the agent will "
+            "answer but never offer a time")
+    else:
+        try:
+            report = Calendar(config.calendar).doctor()
+            if report["ok"]:
+                log("  ok: " + config.calendar.calendar_id + " -- " + report["detail"])
+            else:
+                ok = False
+            for problem in report["problems"]:
+                log("  " + ("FAIL: " if not report["ok"] else "warning: ") + problem)
+        except CalendarError as error:
+            ok = False
+            log("  FAIL: " + str(error))
 
     log("Mailbox")
     try:

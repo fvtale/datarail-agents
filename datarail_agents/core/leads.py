@@ -1,8 +1,8 @@
 """The lead store.
 
-One JSON file holds every lead from both agents. It lives in the datarail-site
-repo under public/leads/, which Apache serves behind basic auth, so the same
-file is both the agents' database and the dashboard's data source.
+One JSON file holds every lead from both agents. It lives at leads/data.json in
+the datarail-site repo -- outside public/, so it is never uploaded to the
+webspace. The dashboard is rendered from it and inlines its own copy.
 
 A JSON file is a real database at this volume, and it has one property a hosted
 CRM does not: the history is in git, so you can see exactly what the agent knew
@@ -16,7 +16,7 @@ import os
 import re
 import uuid
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from collections.abc import Iterable
 
 SCHEMA_VERSION = 1
@@ -75,6 +75,43 @@ class Interaction:
 
 
 @dataclass
+class Booking:
+    """Where this lead has got to with the free intro call.
+
+    Three states, in order:
+      none    -- nothing offered yet
+      offered -- times were proposed and we are waiting on a reply
+      booked  -- on the calendar, invite sent
+
+    offered_slots holds what was actually proposed, so when the client says
+    "the second one works" the agent knows which datetime that was rather than
+    guessing from the text of its own earlier email.
+    """
+
+    status: str = "none"
+    offered_slots: list = field(default_factory=list)
+    offered_at: str = ""
+    slot: dict = field(default_factory=dict)
+    event_id: str = ""
+    booked_at: str = ""
+
+    def is_stale(self, expiry_hours: int) -> bool:
+        """Whether a standing offer is old enough to regenerate.
+
+        An offer made a week ago is probably no longer free, and re-offering
+        stale times is worse than offering none.
+        """
+        if self.status != "offered" or not self.offered_at:
+            return True
+        try:
+            made = datetime.fromisoformat(self.offered_at)
+        except ValueError:
+            return True
+        age = datetime.now(timezone.utc) - made
+        return age > timedelta(hours=expiry_hours)
+
+
+@dataclass
 class Lead:
     id: str
     created_at: str
@@ -98,6 +135,7 @@ class Lead:
     open_questions: list = field(default_factory=list)
     interactions: list = field(default_factory=list)
     thread_ids: list = field(default_factory=list)
+    booking: Booking = field(default_factory=Booking)
 
     @classmethod
     def new(cls, source: str, contact: Contact) -> Lead:
@@ -248,4 +286,16 @@ def _lead_from_dict(raw: dict) -> Lead:
     fields.setdefault("created_at", _now())
     fields.setdefault("updated_at", fields["created_at"])
     fields.setdefault("source", "email")
-    return Lead(contact=contact, **fields)
+
+    # Leads written before booking existed have no booking key at all, so this
+    # has to default rather than assume.
+    raw_booking = raw.get("booking") or {}
+    booking = Booking(
+        status=raw_booking.get("status", "none"),
+        offered_slots=raw_booking.get("offered_slots", []),
+        offered_at=raw_booking.get("offered_at", ""),
+        slot=raw_booking.get("slot", {}) or {},
+        event_id=raw_booking.get("event_id", ""),
+        booked_at=raw_booking.get("booked_at", ""),
+    )
+    return Lead(contact=contact, booking=booking, **fields)

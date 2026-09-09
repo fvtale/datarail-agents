@@ -279,8 +279,15 @@ class Mailbox:
         body: str,
         in_reply_to: str,
         references: str,
+        ics: str = "",
     ) -> str:
-        """Send one reply, threaded onto the original. Returns its Message-ID."""
+        """Send one reply, threaded onto the original. Returns its Message-ID.
+
+        `ics`, when given, is attached as a text/calendar REQUEST so Gmail,
+        Outlook and Apple Mail all offer to add the call to the recipient's
+        calendar. The invite comes from here rather than from Google because a
+        service account cannot add attendees without domain-wide delegation.
+        """
         message = EmailMessage()
         message["From"] = email.utils.formataddr(
             ("DataRail", self.config.address)
@@ -304,6 +311,17 @@ class Mailbox:
         message["Auto-Submitted"] = "auto-replied"
 
         message.set_content(body)
+
+        if ics:
+            message.add_attachment(
+                ics.encode("utf-8"),
+                maintype="text",
+                subtype="calendar",
+                filename="invite.ics",
+                # METHOD=REQUEST is what turns a downloadable file into an
+                # accept/decline prompt in the recipient's mail client.
+                params={"method": "REQUEST", "name": "invite.ics"},
+            )
 
         with smtplib.SMTP_SSL(self.config.smtp_host, self.config.smtp_port) as server:
             server.login(self.config.username, self.config.password)

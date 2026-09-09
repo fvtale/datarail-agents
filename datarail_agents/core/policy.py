@@ -186,8 +186,14 @@ MONEY_PATTERNS = (
     # "our rate is", "we charge", "costs about"
     re.compile(r"\b(our|the)\s+(hourly\s+)?(rate|fee|price|pricing)\s+(is|starts|would be)\b", re.I),
     re.compile(r"\bwe\s+(charge|bill)\b", re.I),
-    re.compile(r"\b(per|an)\s+hour\b.{0,20}\d", re.I),
-    re.compile(r"\b\d[\d,]*\s?(per|/)\s?(hour|hr|day|week|month|project)\b", re.I),
+    # The number must come BEFORE the unit: "95 an hour", "1200/week".
+    #
+    # An earlier version matched "an hour" followed by any digit within twenty
+    # characters, which blocked every booking reply -- "the call is about half
+    # an hour, on Tuesday 14 October" trips it on the date. Rate language
+    # always puts the amount first, so requiring that costs nothing and stops
+    # the agent refusing to confirm appointments.
+    re.compile(r"\b\d[\d,]*\s?(per|an|/)\s?(hour|hr|day|week|month|project)\b", re.I),
 )
 
 # Commitments that are not the agent's to make.

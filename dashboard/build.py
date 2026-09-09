@@ -112,6 +112,12 @@ header.top h1 { font-size: 1.7rem; margin-top: 6px; }
 .field span { display: block; font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.14em; color: var(--dim); margin-bottom: 3px; }
 .field p { margin: 0; font-size: 0.9rem; }
 .field p.none { color: var(--dim); font-style: italic; }
+.call { margin: 16px 0 0; padding: 12px 16px; border-radius: 8px; background: var(--bg-raised); border-left: 2px solid var(--dim); }
+.call .label { display: block; margin-bottom: 3px; }
+.call strong { font-size: 1.02rem; }
+.call.booked { border-left-color: var(--accent-strong); }
+.call.booked strong { color: var(--accent-strong); }
+.call.offered { border-left-color: var(--warm); color: var(--muted); font-size: 0.88rem; }
 .questions { background: var(--bg-raised); border-left: 2px solid var(--warm); padding: 11px 15px; border-radius: 0 6px 6px 0; margin: 14px 0; }
 .questions ul { margin: 6px 0 0; padding-left: 18px; font-size: 0.87rem; color: var(--muted); }
 .thread { margin-top: 18px; }
@@ -169,8 +175,12 @@ def render(payload: dict) -> str:
         status = lead.get("status", "new")
         counts[status] = counts.get(status, 0) + 1
 
+    booked = sum(
+        1 for lead in leads if (lead.get("booking") or {}).get("status") == "booked"
+    )
     stats = [
         ("Total", len(leads)),
+        ("Calls booked", booked),
         ("Qualified", counts.get("qualified", 0)),
         ("Qualifying", counts.get("qualifying", 0)),
         ("New", counts.get("new", 0)),
@@ -234,6 +244,9 @@ def _render_lead(lead: dict) -> str:
     reach = contact.get("email") or contact.get("phone") or ""
     company = contact.get("company")
 
+    booking = lead.get("booking") or {}
+    booking_html = _render_booking(booking)
+
     questions = lead.get("open_questions") or []
     questions_html = ""
     if questions:
@@ -265,7 +278,8 @@ def _render_lead(lead: dict) -> str:
         '<div class="gist">' + esc(lead.get("summary") or "No summary yet.") + "</div>\n"
         "</summary>\n"
         '<div class="body">\n'
-        '<div class="grid">'
+        + booking_html
+        + '<div class="grid">'
         + _field("Need", lead.get("need", ""))
         + _field("Scope", lead.get("scope", ""))
         + _field("Budget", lead.get("budget", ""))
@@ -279,6 +293,28 @@ def _render_lead(lead: dict) -> str:
         + "</div>\n"
         "</div>\n</details>\n"
     )
+
+
+def _render_booking(booking: dict) -> str:
+    """The intro call, which is the thing you most want to see at a glance."""
+    status = booking.get("status", "none")
+
+    if status == "booked":
+        slot = booking.get("slot") or {}
+        return (
+            '<div class="call booked"><span class="label">Intro call booked</span>'
+            "<strong>" + _when(slot.get("start", "")) + "</strong></div>"
+        )
+
+    if status == "offered":
+        offered = booking.get("offered_slots") or []
+        times = ", ".join(_when(item.get("start", "")) for item in offered[:3])
+        return (
+            '<div class="call offered"><span class="label">Times offered, '
+            "awaiting reply</span>" + esc(times) + "</div>"
+        )
+
+    return ""
 
 
 def main(argv=None) -> int:

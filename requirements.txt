@@ -2,3 +2,13 @@
 # every dependency here is installed on every 30-minute run.
 openai>=1.40,<2
 python-dateutil>=2.9
+
+# Google Calendar, for booking the intro call. google-auth only -- it mints the
+# access token, and core/calendar.py calls the two REST endpoints it needs
+# directly. google-api-python-client would drag in a far larger tree to make
+# the same two calls.
+#
+# The [requests] extra matters: google.auth.transport.requests is what refreshes
+# the token, and openai brings httpx rather than requests, so it is not already
+# there by accident.
+google-auth[requests]>=2.30,<3
