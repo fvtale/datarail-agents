@@ -59,7 +59,7 @@ class MailboxConfig:
     review_folder: str = "Agent/Review"
 
     @classmethod
-    def load(cls) -> "MailboxConfig":
+    def load(cls) -> MailboxConfig:
         address = os.environ.get("DATARAIL_MAIL_ADDRESS", "contact@datarail.org").strip()
         return cls(
             address=address,
@@ -92,7 +92,7 @@ class BrainConfig:
     max_retries: int = 3
 
     @classmethod
-    def load(cls) -> "BrainConfig":
+    def load(cls) -> BrainConfig:
         return cls(
             api_key=_require("OPENAI_API_KEY"),
             model=os.environ.get("OPENAI_MODEL", "gpt-5").strip(),
@@ -145,7 +145,7 @@ class Config:
     labels: dict = field(default_factory=dict)
 
     @classmethod
-    def load(cls) -> "Config":
+    def load(cls) -> Config:
         return cls(
             mailbox=MailboxConfig.load(),
             brain=BrainConfig.load(),

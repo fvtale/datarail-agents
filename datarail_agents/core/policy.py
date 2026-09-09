@@ -19,7 +19,6 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Optional
 
 
 @dataclass(frozen=True)
@@ -94,10 +93,7 @@ def is_automated_message(headers: dict) -> bool:
         return True
 
     suppress = lowered.get("x-auto-response-suppress", "").strip().lower()
-    if suppress and suppress != "none":
-        return True
-
-    return False
+    return bool(suppress and suppress != "none")
 
 
 def structural_check(*, sender: str, headers: dict, own_addresses: tuple) -> Decision:
@@ -310,7 +306,7 @@ def redact(text: str, limit: int = 4000) -> str:
     return text[:limit] + "\n\n[truncated]"
 
 
-def first_match(patterns, text: str) -> Optional[str]:
+def first_match(patterns, text: str) -> str | None:
     for pattern in patterns:
         found = pattern.search(text or "")
         if found:

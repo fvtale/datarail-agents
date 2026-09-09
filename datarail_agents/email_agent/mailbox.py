@@ -21,7 +21,7 @@ import smtplib
 from dataclasses import dataclass, field
 from email.header import decode_header, make_header
 from email.message import EmailMessage
-from typing import Iterator, Optional
+from collections.abc import Iterator
 
 from ..core.config import MailboxConfig
 
@@ -147,9 +147,9 @@ class Mailbox:
 
     def __init__(self, config: MailboxConfig):
         self.config = config
-        self._imap: Optional[imaplib.IMAP4_SSL] = None
+        self._imap: imaplib.IMAP4_SSL | None = None
 
-    def __enter__(self) -> "Mailbox":
+    def __enter__(self) -> Mailbox:
         self.connect()
         return self
 

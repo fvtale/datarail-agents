@@ -1,0 +1,29 @@
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+# Pinned explicitly rather than inherited.
+#
+# Ruff's default rule set has expanded between releases, which turned a green
+# pipeline red without a line of code changing. There is no Python toolchain on
+# the author's machine, so CI is the only place this code ever runs -- lint
+# drifting under it is worse than useless. This repo's lint is about
+# correctness, not house style:
+#
+#   E4/E7/E9  imports, statements, syntax
+#   F         pyflakes -- undefined names, unused imports, the real bugs
+#   B         bugbear -- mutable defaults, except-without-raise, and friends
+#
+# Style modernisation (UP, SIM) is welcome in the code but is not a gate.
+select = ["E4", "E7", "E9", "F", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests assert on the truthiness of Decision objects, which is the point of
+# Decision.__bool__.
+"tests/*" = ["B011"]
+
+[tool.pytest.ini_options]
+# The package is not pip-installed in CI, so the repo root has to be importable.
+pythonpath = ["."]
+testpaths = ["tests"]

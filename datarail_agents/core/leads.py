@@ -17,7 +17,7 @@ import re
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from typing import Iterable, Optional
+from collections.abc import Iterable
 
 SCHEMA_VERSION = 1
 
@@ -100,7 +100,7 @@ class Lead:
     thread_ids: list = field(default_factory=list)
 
     @classmethod
-    def new(cls, source: str, contact: Contact) -> "Lead":
+    def new(cls, source: str, contact: Contact) -> Lead:
         stamp = _now()
         return cls(
             id=uuid.uuid4().hex[:12],
@@ -152,7 +152,7 @@ class LeadStore:
         self.leads: list[Lead] = []
 
     @classmethod
-    def open(cls, path: str) -> "LeadStore":
+    def open(cls, path: str) -> LeadStore:
         store = cls(path)
         store.load()
         return store
@@ -181,14 +181,14 @@ class LeadStore:
             handle.write("\n")
         os.replace(tmp, self.path)
 
-    def find_by_contact(self, contact: Contact) -> Optional[Lead]:
+    def find_by_contact(self, contact: Contact) -> Lead | None:
         key = contact.key()
         for lead in self.leads:
             if lead.contact.key() == key:
                 return lead
         return None
 
-    def find_by_thread(self, thread_id: str) -> Optional[Lead]:
+    def find_by_thread(self, thread_id: str) -> Lead | None:
         if not thread_id:
             return None
         for lead in self.leads:

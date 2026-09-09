@@ -17,7 +17,6 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass
-from typing import Optional
 
 from .config import BrainConfig
 
@@ -52,7 +51,7 @@ class Draft:
     timeline: str = ""
     decision_maker: str = ""
     summary: str = ""
-    open_questions: Optional[list] = None
+    open_questions: list | None = None
 
     def __post_init__(self):
         if self.open_questions is None:
@@ -76,7 +75,7 @@ class Brain:
 
     def _complete_json(self, *, model: str, system: str, user: str) -> dict:
         """One JSON-returning call, with backoff on transient failures."""
-        last_error: Optional[Exception] = None
+        last_error: Exception | None = None
 
         for attempt in range(self.config.max_retries):
             try:
