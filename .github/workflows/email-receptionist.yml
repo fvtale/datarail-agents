@@ -37,10 +37,42 @@ jobs:
   receptionist:
     runs-on: ubuntu-latest
     steps:
+      # This runs first, before any checkout, because the datarail-site
+      # checkout needs a token that may not exist yet either.
+      - name: Check for credentials
+        id: creds
+        # Until the secrets exist, skip instead of failing red -- the same way
+        # datarail-site's deploy workflow waits for its IONOS credentials. A
+        # cron that goes red every 30 minutes teaches you to ignore it, which
+        # is the last thing you want from the workflow answering your mail.
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          MAIL_PASSWORD: ${{ secrets.DATARAIL_MAIL_PASSWORD }}
+          SITE_TOKEN: ${{ secrets.DATARAIL_SITE_TOKEN }}
+        run: |
+          # Written as if-statements rather than `[ -z "$X" ] && ...` because
+          # under `bash -e` an AND-list whose first command returns 1 fails the
+          # whole step -- which would mean the check breaks precisely when the
+          # secret IS set.
+          missing=""
+          if [ -z "$OPENAI_API_KEY" ]; then missing="$missing OPENAI_API_KEY"; fi
+          if [ -z "$MAIL_PASSWORD" ]; then missing="$missing DATARAIL_MAIL_PASSWORD"; fi
+          if [ -z "$SITE_TOKEN" ]; then missing="$missing DATARAIL_SITE_TOKEN"; fi
+
+          if [ -n "$missing" ]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Receptionist not configured::Missing secret(s):$missing. Add them under Settings > Secrets and variables > Actions, then run this workflow with 'doctor' ticked. Skipping this run."
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+            echo "All credentials present."
+          fi
+
       - name: Check out the agents
+        if: steps.creds.outputs.ready == 'true'
         uses: actions/checkout@v5
 
       - name: Check out datarail-site
+        if: steps.creds.outputs.ready == 'true'
         uses: actions/checkout@v5
         with:
           repository: fvtale/datarail-site
@@ -49,25 +81,30 @@ jobs:
           token: ${{ secrets.DATARAIL_SITE_TOKEN }}
           path: site
 
-      - uses: actions/setup-python@v6
+      - name: Set up Python
+        if: steps.creds.outputs.ready == 'true'
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
 
       - name: Install
+        if: steps.creds.outputs.ready == 'true'
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
       - name: Decide whether this run may send
+        if: steps.creds.outputs.ready == 'true'
         id: mode
         env:
+          EVENT: ${{ github.event_name }}
           LIVE_VAR: ${{ vars.DATARAIL_AGENT_LIVE }}
           LIVE_INPUT: ${{ github.event.inputs.live }}
         run: |
           # A manual run can send only if it asked to AND the variable allows
-          # it. Two switches, so neither one alone can start the agent talking.
-          if [ "$LIVE_VAR" = "true" ] && { [ "${{ github.event_name }}" = "schedule" ] || [ "$LIVE_INPUT" = "true" ]; }; then
+          # it. Two switches, so neither one alone starts the agent talking.
+          if [ "$LIVE_VAR" = "true" ] && { [ "$EVENT" = "schedule" ] || [ "$LIVE_INPUT" = "true" ]; }; then
             echo "flag=--live" >> "$GITHUB_OUTPUT"
             echo "::notice title=Live::The agent will send replies."
           else
@@ -76,16 +113,17 @@ jobs:
           fi
 
       - name: Doctor
-        if: github.event.inputs.doctor == 'true'
+        if: steps.creds.outputs.ready == 'true' && github.event.inputs.doctor == 'true'
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           DATARAIL_MAIL_PASSWORD: ${{ secrets.DATARAIL_MAIL_PASSWORD }}
+          DATARAIL_MAIL_ADDRESS: ${{ vars.DATARAIL_MAIL_ADDRESS }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
           OPENAI_CLASSIFIER_MODEL: ${{ vars.OPENAI_CLASSIFIER_MODEL }}
         run: python -m datarail_agents.email_agent.run --doctor --site site
 
       - name: Run the receptionist
-        if: github.event.inputs.doctor != 'true'
+        if: steps.creds.outputs.ready == 'true' && github.event.inputs.doctor != 'true'
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           DATARAIL_MAIL_PASSWORD: ${{ secrets.DATARAIL_MAIL_PASSWORD }}
@@ -97,11 +135,11 @@ jobs:
         run: python -m datarail_agents.email_agent.run --site site ${{ steps.mode.outputs.flag }}
 
       - name: Rebuild the dashboard
-        if: github.event.inputs.doctor != 'true'
+        if: steps.creds.outputs.ready == 'true' && github.event.inputs.doctor != 'true'
         run: python dashboard/build.py --site site
 
       - name: Push leads to datarail-site
-        if: github.event.inputs.doctor != 'true'
+        if: steps.creds.outputs.ready == 'true' && github.event.inputs.doctor != 'true'
         working-directory: site
         run: |
           # leads/ is the private store, public/leads/ is the served dashboard.
@@ -119,7 +157,7 @@ jobs:
           git push origin HEAD:main
 
       - name: Confirm the dashboard is not public
-        if: github.event.inputs.doctor != 'true'
+        if: steps.creds.outputs.ready == 'true' && github.event.inputs.doctor != 'true'
         # The dashboard page has client details inlined in it. If basic auth is
         # not working, that page is readable by anyone who guesses the URL, and
         # this job should go red until it is fixed. A 401 or 403 is the pass;
