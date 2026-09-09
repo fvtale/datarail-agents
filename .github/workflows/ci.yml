@@ -1,0 +1,101 @@
+name: CI
+
+# Nothing in this repo is built or run on the author's machine, so this
+# workflow is the only thing that ever executes the code before it answers a
+# real client. Treat a red run as a broken receptionist.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The cron job pins one version; the range catches anything that would
+        # break when the runner image moves.
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest ruff
+
+      - name: Lint
+        run: ruff check datarail_agents dashboard tests
+
+      - name: Import every module
+        # Catches syntax errors and bad imports in the paths tests do not
+        # reach, such as the SMTP and IMAP code.
+        run: |
+          python -c "import datarail_agents, datarail_agents.core.config, datarail_agents.core.leads, datarail_agents.core.policy, datarail_agents.core.knowledge, datarail_agents.core.brain, datarail_agents.email_agent.mailbox, datarail_agents.email_agent.run; print('all modules import')"
+
+      - name: Test
+        run: python -m pytest -q
+
+      - name: Knowledge base loads
+        run: python -c "from datarail_agents.core import knowledge; print(len(knowledge.load()), 'characters of knowledge')"
+
+      - name: Dashboard renders with no leads
+        # The empty state is the one a first deploy actually hits.
+        run: |
+          mkdir -p /tmp/site/leads
+          python dashboard/build.py --site /tmp/site
+          grep -q "No leads yet" /tmp/site/public/leads/index.html
+          echo "empty dashboard renders"
+
+      - name: Dashboard renders with a lead
+        run: |
+          mkdir -p /tmp/site2/leads
+          cat > /tmp/site2/leads/data.json <<'JSON'
+          {
+            "schema_version": 1,
+            "generated_at": "2026-09-09T12:00:00+00:00",
+            "count": 1,
+            "leads": [{
+              "id": "abc123",
+              "created_at": "2026-09-09T11:00:00+00:00",
+              "updated_at": "2026-09-09T12:00:00+00:00",
+              "source": "email",
+              "contact": {"name": "Sam Reed", "email": "sam@example.com", "phone": "", "company": "Acme"},
+              "need": "a booking site", "scope": "", "budget": "under 5k",
+              "timeline": "within a month", "decision_maker": "yes",
+              "summary": "Wants a booking form for a small studio.",
+              "score": 80, "status": "qualified",
+              "open_questions": ["Does she already have a domain?"],
+              "interactions": [{"at": "2026-09-09T11:00:00+00:00", "source": "email",
+                "direction": "in", "subject": "Booking form", "body": "Can you build one?",
+                "message_id": "<x@y>"}],
+              "thread_ids": ["<x@y>"]
+            }]
+          }
+          JSON
+          python dashboard/build.py --site /tmp/site2
+          grep -q "Sam Reed" /tmp/site2/public/leads/index.html
+          grep -q "qualified" /tmp/site2/public/leads/index.html
+          echo "populated dashboard renders"
+
+      - name: Raw lead data never lands in the served directory
+        # The store is deliberately outside public/ so it cannot be fetched
+        # over HTTP even if the .htaccess is wrong or never uploads. If a
+        # refactor ever moves it back, this fails instead of leaking quietly.
+        run: |
+          if find /tmp/site2/public -name '*.json' | grep -q .; then
+            echo "::error title=Lead data in public/::A .json file was written under public/. The lead store must stay outside public/ so it is never uploaded."
+            find /tmp/site2/public -name '*.json'
+            exit 1
+          fi
+          echo "public/ contains no JSON: raw lead data stays private"

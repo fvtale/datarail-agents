@@ -1,0 +1,4 @@
+# The email receptionist runs on a GitHub Actions cron. Keep this list small:
+# every dependency here is installed on every 30-minute run.
+openai>=1.40,<2
+python-dateutil>=2.9

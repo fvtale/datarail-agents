@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+# Local scratch copies of lead data. The real store lives in datarail-site.
+/local-leads/

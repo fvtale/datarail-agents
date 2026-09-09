@@ -1,0 +1,139 @@
+name: Email receptionist
+
+# Polls contact@datarail.org, answers genuine enquiries, records leads, and
+# pushes the result to datarail-site -- whose own deploy workflow then ships
+# the dashboard to IONOS.
+#
+# The agent is DRY RUN until the repository variable DATARAIL_AGENT_LIVE is set
+# to 'true'. Setting it to anything else, or deleting it, silences the agent on
+# the next run without a code change. That is the kill switch.
+
+on:
+  schedule:
+    # Every 30 minutes. GitHub queues cron jobs and can run them late under
+    # load, so treat this as "about twice an hour", not a guarantee.
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+    inputs:
+      live:
+        description: "Actually send replies (otherwise dry run)"
+        type: boolean
+        default: false
+      doctor:
+        description: "Only check credentials, models and mailbox, then stop"
+        type: boolean
+        default: false
+
+# One run at a time. Two passes over the same INBOX would both read the same
+# unread mail and both reply to it.
+concurrency:
+  group: email-receptionist
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  receptionist:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the agents
+        uses: actions/checkout@v5
+
+      - name: Check out datarail-site
+        uses: actions/checkout@v5
+        with:
+          repository: fvtale/datarail-site
+          # A fine-grained PAT with Contents: read and write on datarail-site.
+          # The default GITHUB_TOKEN cannot reach another repository.
+          token: ${{ secrets.DATARAIL_SITE_TOKEN }}
+          path: site
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Decide whether this run may send
+        id: mode
+        env:
+          LIVE_VAR: ${{ vars.DATARAIL_AGENT_LIVE }}
+          LIVE_INPUT: ${{ github.event.inputs.live }}
+        run: |
+          # A manual run can send only if it asked to AND the variable allows
+          # it. Two switches, so neither one alone can start the agent talking.
+          if [ "$LIVE_VAR" = "true" ] && { [ "${{ github.event_name }}" = "schedule" ] || [ "$LIVE_INPUT" = "true" ]; }; then
+            echo "flag=--live" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Live::The agent will send replies."
+          else
+            echo "flag=" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Dry run::Nothing will be sent. Set the repository variable DATARAIL_AGENT_LIVE to 'true' to go live."
+          fi
+
+      - name: Doctor
+        if: github.event.inputs.doctor == 'true'
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          DATARAIL_MAIL_PASSWORD: ${{ secrets.DATARAIL_MAIL_PASSWORD }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+          OPENAI_CLASSIFIER_MODEL: ${{ vars.OPENAI_CLASSIFIER_MODEL }}
+        run: python -m datarail_agents.email_agent.run --doctor --site site
+
+      - name: Run the receptionist
+        if: github.event.inputs.doctor != 'true'
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          DATARAIL_MAIL_PASSWORD: ${{ secrets.DATARAIL_MAIL_PASSWORD }}
+          DATARAIL_MAIL_ADDRESS: ${{ vars.DATARAIL_MAIL_ADDRESS }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+          OPENAI_CLASSIFIER_MODEL: ${{ vars.OPENAI_CLASSIFIER_MODEL }}
+          DATARAIL_DISCLOSE_AGENT: ${{ vars.DATARAIL_DISCLOSE_AGENT }}
+          DATARAIL_MAX_SENDS_PER_RUN: ${{ vars.DATARAIL_MAX_SENDS_PER_RUN }}
+        run: python -m datarail_agents.email_agent.run --site site ${{ steps.mode.outputs.flag }}
+
+      - name: Rebuild the dashboard
+        if: github.event.inputs.doctor != 'true'
+        run: python dashboard/build.py --site site
+
+      - name: Push leads to datarail-site
+        if: github.event.inputs.doctor != 'true'
+        working-directory: site
+        run: |
+          # leads/ is the private store, public/leads/ is the served dashboard.
+          if [ -z "$(git status --porcelain leads public/leads)" ]; then
+            echo "No lead changes to push."
+            exit 0
+          fi
+          git config user.name "DataRail receptionist"
+          git config user.email "contact@datarail.org"
+          git add leads public/leads
+          git commit -m "Leads: update from the email receptionist"
+          # Another run, or a human, may have pushed since checkout. Rebase
+          # rather than force: losing a lead to a race is not acceptable.
+          git pull --rebase --autostash origin main
+          git push origin HEAD:main
+
+      - name: Confirm the dashboard is not public
+        if: github.event.inputs.doctor != 'true'
+        # The dashboard page has client details inlined in it. If basic auth is
+        # not working, that page is readable by anyone who guesses the URL, and
+        # this job should go red until it is fixed. A 401 or 403 is the pass;
+        # anything else, including a 200, is a leak.
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 https://datarail.org/leads/ || echo "000")
+          case "$code" in
+            401|403)
+              echo "Dashboard is protected (HTTP $code)." ;;
+            000)
+              echo "::warning title=Could not check::datarail.org did not respond. Not treating this as a failure." ;;
+            404)
+              echo "::notice title=Not deployed yet::/leads/ returned 404. It will appear after the next site deploy." ;;
+            *)
+              echo "::error title=Dashboard is publicly readable::https://datarail.org/leads/ returned HTTP $code instead of 401. Client data is exposed. Fix AuthUserFile in public/leads/.htaccess -- see the comments in that file."
+              exit 1 ;;
+          esac
