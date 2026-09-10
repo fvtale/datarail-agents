@@ -16,8 +16,22 @@ class ConfigError(RuntimeError):
     """A required setting is missing or unusable."""
 
 
-def _require(name: str) -> str:
+def _env(name: str, default: str = "") -> str:
+    """An environment variable, or `default` when it is unset *or empty*.
+
+    GitHub Actions passes an unset repository variable as an empty string, not
+    as an absent one. The workflow forwards every optional setting as
+    `${{ vars.X }}`, so plain `os.environ.get(name, default)` returned "" and
+    never the default -- a blank mailbox address, a blank model name, and
+    `int("")` crashing the run -- on exactly the setup the README describes,
+    where those variables are optional and left unset.
+    """
     value = os.environ.get(name, "").strip()
+    return value if value else default
+
+
+def _require(name: str) -> str:
+    value = _env(name, "").strip()
     if not value:
         raise ConfigError(
             f"{name} is not set. See README.md for the full list of secrets and "
@@ -27,7 +41,7 @@ def _require(name: str) -> str:
 
 
 def _flag(name: str, default: bool) -> bool:
-    raw = os.environ.get(name)
+    raw = _env(name)
     if raw is None or not raw.strip():
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
@@ -57,19 +71,23 @@ class MailboxConfig:
     # This is the folder actually worth reading: everything in it is a real
     # enquiry still waiting on a human.
     review_folder: str = "Agent/Review"
+    # Listings for the Glyph calendar that have been proposed as a pull request.
+    # The original is kept here so the reviewer can check the PR against it --
+    # the PR itself is public and deliberately carries none of the email.
+    listings_folder: str = "Agent/Listings"
 
     @classmethod
     def load(cls) -> MailboxConfig:
-        address = os.environ.get("DATARAIL_MAIL_ADDRESS", "contact@datarail.org").strip()
+        address = _env("DATARAIL_MAIL_ADDRESS", "contact@datarail.org").strip()
         return cls(
             address=address,
             # IONOS authenticates with the full address as the username.
-            username=os.environ.get("DATARAIL_MAIL_USERNAME", "").strip() or address,
+            username=_env("DATARAIL_MAIL_USERNAME", "").strip() or address,
             password=_require("DATARAIL_MAIL_PASSWORD"),
-            imap_host=os.environ.get("DATARAIL_IMAP_HOST", "imap.ionos.com").strip(),
-            imap_port=int(os.environ.get("DATARAIL_IMAP_PORT", "993")),
-            smtp_host=os.environ.get("DATARAIL_SMTP_HOST", "smtp.ionos.com").strip(),
-            smtp_port=int(os.environ.get("DATARAIL_SMTP_PORT", "465")),
+            imap_host=_env("DATARAIL_IMAP_HOST", "imap.ionos.com").strip(),
+            imap_port=int(_env("DATARAIL_IMAP_PORT", "993")),
+            smtp_host=_env("DATARAIL_SMTP_HOST", "smtp.ionos.com").strip(),
+            smtp_port=int(_env("DATARAIL_SMTP_PORT", "465")),
         )
 
 
@@ -95,11 +113,11 @@ class BrainConfig:
     def load(cls) -> BrainConfig:
         return cls(
             api_key=_require("OPENAI_API_KEY"),
-            model=os.environ.get("OPENAI_MODEL", "gpt-5").strip(),
-            classifier_model=os.environ.get(
+            model=_env("OPENAI_MODEL", "gpt-5").strip(),
+            classifier_model=_env(
                 "OPENAI_CLASSIFIER_MODEL", "gpt-5-mini"
             ).strip(),
-            request_timeout=float(os.environ.get("OPENAI_TIMEOUT", "60")),
+            request_timeout=float(_env("OPENAI_TIMEOUT", "60")),
         )
 
 
@@ -153,15 +171,15 @@ class CalendarConfig:
     def load(cls) -> CalendarConfig:
         return cls(
             service_account_json=_require("GOOGLE_SERVICE_ACCOUNT_JSON"),
-            calendar_id=os.environ.get("GOOGLE_CALENDAR_ID", "primary").strip(),
-            timezone=os.environ.get("DATARAIL_TIMEZONE", "America/New_York").strip(),
-            slot_minutes=int(os.environ.get("BOOKING_SLOT_MINUTES", "30")),
-            buffer_minutes=int(os.environ.get("BOOKING_BUFFER_MINUTES", "15")),
-            min_notice_hours=int(os.environ.get("BOOKING_MIN_NOTICE_HOURS", "12")),
-            horizon_days=int(os.environ.get("BOOKING_HORIZON_DAYS", "14")),
-            slots_to_offer=int(os.environ.get("BOOKING_SLOTS_TO_OFFER", "3")),
-            earliest_hour=int(os.environ.get("BOOKING_EARLIEST_HOUR", "0")),
-            latest_hour=int(os.environ.get("BOOKING_LATEST_HOUR", "24")),
+            calendar_id=_env("GOOGLE_CALENDAR_ID", "primary").strip(),
+            timezone=_env("DATARAIL_TIMEZONE", "America/New_York").strip(),
+            slot_minutes=int(_env("BOOKING_SLOT_MINUTES", "30")),
+            buffer_minutes=int(_env("BOOKING_BUFFER_MINUTES", "15")),
+            min_notice_hours=int(_env("BOOKING_MIN_NOTICE_HOURS", "12")),
+            horizon_days=int(_env("BOOKING_HORIZON_DAYS", "14")),
+            slots_to_offer=int(_env("BOOKING_SLOTS_TO_OFFER", "3")),
+            earliest_hour=int(_env("BOOKING_EARLIEST_HOUR", "0")),
+            latest_hour=int(_env("BOOKING_LATEST_HOUR", "24")),
         )
 
 
@@ -191,6 +209,9 @@ class Config:
     # A single correspondent can only be replied to this many times in a day,
     # however many messages they send.
     max_sends_per_thread_per_day: int = 2
+    # Glyph proposals opened per run. Each one is a public pull request, so a
+    # burst of junk listing mail should wait in the inbox, not flood the repo.
+    max_listings_per_run: int = 5
 
     operator_name: str = "Lynette"
     operator_email: str = "contact@datarail.org"
@@ -219,16 +240,17 @@ class Config:
             # Absent credentials mean booking is off, not that the run fails.
             calendar=(
                 CalendarConfig.load()
-                if os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
+                if _env("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
                 else None
             ),
-            site_root=os.environ.get("DATARAIL_SITE_ROOT", "site").strip(),
+            site_root=_env("DATARAIL_SITE_ROOT", "site").strip(),
             # Dry run defaults to ON. Sending is something you turn on
             # deliberately, not something you forget to turn off.
             dry_run=_flag("DATARAIL_AGENT_DRY_RUN", True),
-            max_sends_per_run=int(os.environ.get("DATARAIL_MAX_SENDS_PER_RUN", "10")),
+            max_sends_per_run=int(_env("DATARAIL_MAX_SENDS_PER_RUN", "10")),
             max_sends_per_thread_per_day=int(
-                os.environ.get("DATARAIL_MAX_SENDS_PER_THREAD_PER_DAY", "2")
+                _env("DATARAIL_MAX_SENDS_PER_THREAD_PER_DAY", "2")
             ),
+            max_listings_per_run=int(_env("DATARAIL_MAX_LISTINGS_PER_RUN", "5")),
             disclose_agent=_flag("DATARAIL_DISCLOSE_AGENT", True),
         )

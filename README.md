@@ -38,6 +38,7 @@ Every message ends in one of four places, and the run log says which:
 | Outcome | Where the mail goes |
 | --- | --- |
 | `replied` | `Agent/Handled` |
+| `listing` | `Agent/Listings`, once proposed to [Glyph](#listings-for-glyph) |
 | `review` | `Agent/Review` — **this is the folder to actually read** |
 | `ignored` | `Agent/Ignored` |
 | `error` | left in INBOX, unread, retried next run |
@@ -65,9 +66,15 @@ both implicit TLS, authenticating with the full address as the username.
 | `DATARAIL_MAIL_PASSWORD` | The mailbox password |
 | `DATARAIL_SITE_TOKEN` | A fine-grained PAT with **Contents: read and write** on `fvtale/datarail-site`, and nothing else |
 | `GOOGLE_SERVICE_ACCOUNT_JSON` | Optional. The whole downloaded service-account key file, pasted in. Without it the agent still answers and qualifies, it just never offers a time |
+| `GLYPH_DEPLOY_KEY` | Optional. The private half of an SSH deploy key with **write access on `fvtale/glyph`**. Without it, listing mail waits unread in the inbox — see [Listings for Glyph](#listings-for-glyph) |
 
 `DATARAIL_SITE_TOKEN` is needed because the default `GITHUB_TOKEN` cannot reach
 another repository. Scope it to that one repo only.
+
+A name collision worth knowing about: the Glyph repository *also* has a secret
+called `DATARAIL_SITE_TOKEN`, and there it holds an SSH deploy key, not a PAT.
+The two are not interchangeable — this workflow passes its value as `token:`,
+Glyph's passes its as `ssh-key:`. Do not copy one into the other.
 
 ### 2b. Google Calendar, for booking
 
@@ -114,6 +121,11 @@ rather than from Google.
 | `OPENAI_CLASSIFIER_MODEL` | `gpt-5-mini` | Triage model — high volume, so keep it cheap |
 | `DATARAIL_DISCLOSE_AGENT` | `true` | Whether replies say they were written by an assistant |
 | `DATARAIL_MAX_SENDS_PER_RUN` | `10` | Hard ceiling per run |
+| `DATARAIL_MAX_LISTINGS_PER_RUN` | `5` | Glyph proposals per run. Each is a public pull request, so a burst of junk waits in the inbox instead |
+
+Leaving any of these unset is fine. Actions passes an unset variable as an
+empty string, and `core/config.py` reads empty as "use the default" — it used
+not to, which would have blanked the mailbox address on the first real run.
 
 ### 3. Check it before it talks
 
@@ -186,6 +198,58 @@ unsafe draft is not the thing to ask for a safer one.
 
 ---
 
+## Listings for Glyph
+
+[Glyph](https://github.com/fvtale/glyph) is DataRail's calendar of New York
+literary events. Its submit page asks venues and organisers to email their
+dates to this same address with the subject "Glyph listing", so the
+receptionist is also Glyph's listings desk.
+
+A message the classifier labels `listing` never reaches the reply path — a
+venue sending its dates must not get a consulting pitch back, and it is not a
+lead. Instead:
+
+1. The drafting model reads the events out of it. It is given the subject and
+   body but **not the sender**, so it cannot leak an address it never saw.
+2. `core/listings.py` keeps only the fields the listing contract allows,
+   scrubs email addresses and phone numbers, and names each listing the way
+   Glyph does.
+3. `email_agent/glyph.py` pushes them to Glyph as a branch `listings/<ref>`, one
+   file per listing, using `GLYPH_DEPLOY_KEY`. The ref is a hash of the
+   Message-ID, so a retried run finds the branch already there and never opens
+   a second pull request for one email.
+4. The mail moves to `Agent/Listings`, where the reviewer can check it.
+5. Glyph's own workflow judges the branch against the listing contract and
+   opens the pull request. Merging it publishes the listing.
+
+The receptionist never judges its own proposals. Glyph does, with the same
+code its board uses.
+
+**Glyph is a public repository**, and its pull requests are public from the
+moment they open. So the commit — and therefore the PR — is built from fixed
+phrases and the listing fields alone. The sender's address and the model's
+free-text notes go to the private run log in datarail-site, never to Glyph.
+
+Listing mail with nothing listable in it — a question, a removal request —
+goes to `Agent/Review` for a person.
+
+To switch it on:
+
+1. Generate an SSH keypair with no passphrase.
+2. Public half: `fvtale/glyph` → Settings → Deploy keys → Add, **tick "Allow
+   write access"**.
+3. Private half: this repository's `GLYPH_DEPLOY_KEY` secret.
+4. On `fvtale/glyph`: Settings → Actions → General → Workflow permissions →
+   tick **Allow GitHub Actions to create and approve pull requests**, so Glyph's
+   workflow can open the PR.
+5. Run the workflow with **doctor** ticked. The Glyph line proves the key
+   authenticates, without pushing anything.
+
+It follows the same dry-run rule as everything else: without `--live`,
+listings are drafted and printed but nothing is pushed and no mail is moved.
+
+---
+
 ## Editing what it knows
 
 `knowledge/datarail.md` is the agent's entire world. Change what DataRail
@@ -223,9 +287,11 @@ datarail_agents/
     brain.py       the only file that imports the OpenAI SDK
     policy.py      the guardrails — plain rules, no model calls
     leads.py       the shared lead store
+    listings.py    shapes and scrubs Glyph listings — plain rules, no model calls
     knowledge.py   loads knowledge/*.md
   email_agent/
     mailbox.py     IMAP and SMTP; all the network code
+    glyph.py       pushes listing proposals to Glyph; all the git code
     run.py         one pass over unread mail
   voice/           empty until the GPU arrives — see docs/
 knowledge/

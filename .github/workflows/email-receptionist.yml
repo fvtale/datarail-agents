@@ -49,6 +49,7 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           MAIL_PASSWORD: ${{ secrets.DATARAIL_MAIL_PASSWORD }}
           SITE_TOKEN: ${{ secrets.DATARAIL_SITE_TOKEN }}
+          GLYPH_KEY: ${{ secrets.GLYPH_DEPLOY_KEY }}
         run: |
           # Written as if-statements rather than `[ -z "$X" ] && ...` because
           # under `bash -e` an AND-list whose first command returns 1 fails the
@@ -67,6 +68,15 @@ jobs:
             echo "All credentials present."
           fi
 
+          # Optional, like the calendar. Without it the receptionist runs as
+          # before and listing mail simply waits, unread, until the key exists.
+          if [ -n "$GLYPH_KEY" ]; then
+            echo "glyph=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "glyph=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Glyph intake off::GLYPH_DEPLOY_KEY is not set, so listing mail is left unread for now."
+          fi
+
       - name: Check out the agents
         if: steps.creds.outputs.ready == 'true'
         uses: actions/checkout@v5
@@ -80,6 +90,18 @@ jobs:
           # The default GITHUB_TOKEN cannot reach another repository.
           token: ${{ secrets.DATARAIL_SITE_TOKEN }}
           path: site
+
+      - name: Check out Glyph
+        if: steps.creds.outputs.ready == 'true' && steps.creds.outputs.glyph == 'true'
+        uses: actions/checkout@v5
+        with:
+          repository: fvtale/glyph
+          # A deploy key with write access on fvtale/glyph. It can push a
+          # listings/* branch and nothing more: Glyph's own workflow judges the
+          # branch and opens the pull request, so this key never needs to. It
+          # does not expire, which a PAT on a job that runs forever would.
+          ssh-key: ${{ secrets.GLYPH_DEPLOY_KEY }}
+          path: glyph
 
       - name: Set up Python
         if: steps.creds.outputs.ready == 'true'
@@ -123,6 +145,7 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_CALENDAR_ID: ${{ vars.GOOGLE_CALENDAR_ID }}
           DATARAIL_TIMEZONE: ${{ vars.DATARAIL_TIMEZONE }}
+          GLYPH_ROOT: ${{ steps.creds.outputs.glyph == 'true' && 'glyph' || '' }}
         run: python -m datarail_agents.email_agent.run --doctor --site site
 
       - name: Run the receptionist
@@ -138,6 +161,8 @@ jobs:
           DATARAIL_TIMEZONE: ${{ vars.DATARAIL_TIMEZONE }}
           DATARAIL_DISCLOSE_AGENT: ${{ vars.DATARAIL_DISCLOSE_AGENT }}
           DATARAIL_MAX_SENDS_PER_RUN: ${{ vars.DATARAIL_MAX_SENDS_PER_RUN }}
+          DATARAIL_MAX_LISTINGS_PER_RUN: ${{ vars.DATARAIL_MAX_LISTINGS_PER_RUN }}
+          GLYPH_ROOT: ${{ steps.creds.outputs.glyph == 'true' && 'glyph' || '' }}
         run: python -m datarail_agents.email_agent.run --site site ${{ steps.mode.outputs.flag }}
 
       - name: Rebuild the dashboard

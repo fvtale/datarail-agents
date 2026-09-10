@@ -162,6 +162,7 @@ class Mailbox:
         self._ensure_folder(self.config.processed_folder)
         self._ensure_folder(self.config.ignored_folder)
         self._ensure_folder(self.config.review_folder)
+        self._ensure_folder(self.config.listings_folder)
 
     def close(self) -> None:
         if self._imap is None:

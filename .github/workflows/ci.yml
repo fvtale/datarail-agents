@@ -41,7 +41,7 @@ jobs:
         # Catches syntax errors and bad imports in the paths tests do not
         # reach, such as the SMTP and IMAP code.
         run: |
-          python -c "import datarail_agents, datarail_agents.core.config, datarail_agents.core.leads, datarail_agents.core.policy, datarail_agents.core.knowledge, datarail_agents.core.brain, datarail_agents.core.calendar, datarail_agents.core.booking, datarail_agents.email_agent.mailbox, datarail_agents.email_agent.run; print('all modules import')"
+          python -c "import datarail_agents, datarail_agents.core.config, datarail_agents.core.leads, datarail_agents.core.policy, datarail_agents.core.knowledge, datarail_agents.core.brain, datarail_agents.core.calendar, datarail_agents.core.booking, datarail_agents.core.listings, datarail_agents.email_agent.mailbox, datarail_agents.email_agent.glyph, datarail_agents.email_agent.run; print('all modules import')"
 
       - name: Test
         run: python -m pytest -q

@@ -7,10 +7,12 @@ the IMAP folder a message was moved to.
 
     python -m datarail_agents.email_agent.run --site ../datarail-site
 
-Every message ends in exactly one of four places, and the run log says which:
+Every message ends in exactly one of five places, and the run log says which:
 
   replied   -- draft passed both gates, sent, moved to Agent/Handled
-  review    -- real enquiry, draft failed the safety gate, moved to Agent/Review
+  listing   -- event dates for Glyph, proposed as a branch, moved to Agent/Listings
+  review    -- needs a person: a draft that failed the safety gate, or listing
+               mail with nothing listable in it; moved to Agent/Review
   ignored   -- spam, bulk or automated, moved to Agent/Ignored, no reply
   error     -- something broke; left in INBOX unread to be retried next run
 """
@@ -26,10 +28,12 @@ from datetime import datetime, timezone
 
 from ..core import booking as booking_flow
 from ..core import knowledge, policy
+from ..core import listings as listing_rules
 from ..core.brain import Brain, BrainError
 from ..core.calendar import Calendar, CalendarError, ics_for
 from ..core.config import Config, ConfigError
 from ..core.leads import Contact, Interaction, LeadStore
+from .glyph import GlyphError, GlyphRepo
 from .mailbox import InboundMessage, Mailbox
 
 # The raw store lives OUTSIDE public/, at the datarail-site repo root.
@@ -53,7 +57,7 @@ def log(message: str) -> None:
 
 
 class Runner:
-    def __init__(self, config: Config, site_root: str):
+    def __init__(self, config: Config, site_root: str, glyph_root: str = ""):
         self.config = config
         self.site_root = site_root
         self.leads_path = os.path.join(site_root, LEADS_RELATIVE_PATH)
@@ -61,7 +65,19 @@ class Runner:
         self.brain = Brain(config.brain)
         self.knowledge = knowledge.load()
         self.sends_this_run = 0
-        self.results = {"replied": [], "review": [], "ignored": [], "error": [], "booked": []}
+        self.listings_this_run = 0
+        self.results = {
+            "replied": [], "listing": [], "review": [], "ignored": [], "error": [], "booked": [],
+        }
+
+        # Listing intake for Glyph is optional, like booking. Without a Glyph
+        # checkout the rest of the receptionist runs exactly as it always has.
+        self.glyph = None
+        if glyph_root:
+            try:
+                self.glyph = GlyphRepo.open(glyph_root)
+            except GlyphError as error:
+                log("  glyph unavailable, listing intake disabled: " + str(error))
 
         # Booking is optional. If the calendar cannot be constructed the agent
         # still answers and still qualifies -- it just never offers a time.
@@ -80,6 +96,8 @@ class Runner:
         log("  model   : " + self.config.brain.model)
         log("  leads   : " + self.leads_path + " (" + str(len(self.store)) + " existing)")
         log("  mode    : " + ("DRY RUN -- nothing will be sent" if self.config.dry_run else "LIVE"))
+        log("  glyph   : " + ("proposing listings from " + self.glyph.root if self.glyph
+                              else "off -- listing mail is left unread"))
         log("")
 
         with Mailbox(self.config.mailbox) as mailbox:
@@ -129,6 +147,12 @@ class Runner:
             body=message.body,
         )
         log("    classified: " + classification)
+
+        # Listings for Glyph never reach the reply path. They are not leads, and
+        # a venue sending its dates must not get a consulting pitch back.
+        if classification == "listing":
+            self._handle_listing(mailbox, message)
+            return
 
         contact = Contact(
             name=message.sender_name,
@@ -237,6 +261,90 @@ class Runner:
         self.results["replied"].append({"from": who, "subject": subject, "score": lead.score})
 
     # ------------------------------------------------------------------
+
+    def _handle_listing(self, mailbox: Mailbox, message: InboundMessage) -> None:
+        """Draft an email's events and propose them to Glyph as a branch.
+
+        Never replies. The sender finds out the way everyone else does: the
+        listing appears on the calendar once a person has approved it.
+        """
+        who = message.sender_email or "(no sender)"
+
+        if self.glyph is None:
+            # Neither filed nor marked read: nothing is lost to a missing key,
+            # and the first run after GLYPH_DEPLOY_KEY is set picks these up.
+            log("    listing intake is off (no Glyph checkout); left unread")
+            self.results["listing"].append({"from": who, "outcome": "intake off"})
+            return
+
+        if self.listings_this_run >= self.config.max_listings_per_run:
+            log("    listing limit for this run reached; left for the next run")
+            self.results["listing"].append({"from": who, "outcome": "run limit"})
+            return
+
+        ref = listing_rules.proposal_ref(
+            message.message_id or (who + "|" + message.subject + "|" + message.date)
+        )
+        branch = listing_rules.branch_for(ref)
+        if self.glyph.already_proposed(branch):
+            log("    already proposed as " + branch)
+            self._file(mailbox, message, self.config.mailbox.listings_folder)
+            self.results["listing"].append(
+                {"from": who, "outcome": "already proposed", "ref": ref}
+            )
+            return
+
+        draft = self.brain.extract_listings(
+            subject=message.subject,
+            body=message.body,
+            venues=list(self.glyph.venues.values()),
+            today=listing_rules.today_in(self._timezone()),
+        )
+        shaped = [listing_rules.shape(item, self.glyph.venues) for item in draft.listings]
+        shaped = [item for item in shaped if item.get("title")]
+
+        if not shaped:
+            # A question about listings, a removal request, or an email the model
+            # could not read. Each of those needs a person, not a pull request.
+            reason = "listing mail with nothing to list"
+            if draft.notes:
+                reason += ": " + draft.notes[:200]
+            log("    " + reason)
+            self._file(mailbox, message, self.config.mailbox.review_folder)
+            self.results["review"].append({"from": who, "reason": reason})
+            return
+
+        named = [self.glyph.venues[item["venueId"]] for item in shaped if item.get("venueId")]
+        subject, body = listing_rules.commit_message(
+            shaped,
+            received=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+            ref=ref,
+            sender_matches=listing_rules.sender_is_venue(message.sender_email, named),
+        )
+        # The run log is private -- it lives outside public/ in datarail-site --
+        # so the sender and the model's free-text notes belong here, and only
+        # here. The pull request gets the listing and nothing else.
+        record = {"from": who, "ref": ref, "count": len(shaped),
+                  "subject": subject, "notes": draft.notes}
+
+        if self.config.dry_run:
+            log("    would propose " + branch + ": " + subject)
+            for item in shaped:
+                log("      " + json.dumps(item, ensure_ascii=False)[:400])
+            self.results["listing"].append(dict(record, outcome="dry run"))
+            return
+
+        self.glyph.propose(branch, shaped, subject, body)
+        self.listings_this_run += 1
+        log("    proposed " + branch + " (" + str(len(shaped)) + " listing(s))")
+        self._file(mailbox, message, self.config.mailbox.listings_folder)
+        self.results["listing"].append(dict(record, outcome="proposed", branch=branch))
+
+    def _timezone(self) -> str:
+        if self.config.calendar:
+            return self.config.calendar.timezone
+        # `or`, not a default: Actions passes an unset variable as "".
+        return os.environ.get("DATARAIL_TIMEZONE") or "America/New_York"
 
     def _offer_for(self, lead):
         """The times to put in front of this lead, if any.
@@ -422,7 +530,12 @@ class Runner:
         confirmed = sum(
             1 for item in self.results["booked"] if item.get("outcome") == "confirmed"
         )
+        proposed = sum(
+            1 for item in self.results["listing"]
+            if item.get("outcome") in ("proposed", "dry run")
+        )
         log("Replied " + str(len(self.results["replied"]))
+            + " | listings proposed " + str(proposed)
             + " | booked " + str(confirmed)
             + " | held for review " + str(len(self.results["review"]))
             + " | ignored " + str(len(self.results["ignored"]))
@@ -454,6 +567,11 @@ def main(argv=None) -> int:
         action="store_true",
         help="Check credentials, models and knowledge base, then exit without touching mail.",
     )
+    parser.add_argument(
+        "--glyph",
+        default=os.environ.get("GLYPH_ROOT", ""),
+        help="Path to a fvtale/glyph checkout. Without one, listing intake is off.",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -469,10 +587,10 @@ def main(argv=None) -> int:
         config = _as_dry_run(config)
 
     if args.doctor:
-        return _doctor(config, args.site)
+        return _doctor(config, args.site, args.glyph)
 
     try:
-        Runner(config, args.site).run()
+        Runner(config, args.site, glyph_root=args.glyph).run()
     except BrainError as error:
         log("Model error: " + str(error))
         return 3
@@ -489,7 +607,7 @@ def _as_dry_run(config: Config) -> Config:
     return replace(config, dry_run=True)
 
 
-def _doctor(config: Config, site_root: str) -> int:
+def _doctor(config: Config, site_root: str, glyph_root: str = "") -> int:
     ok = True
 
     log("Knowledge base")
@@ -537,6 +655,26 @@ def _doctor(config: Config, site_root: str) -> int:
             for problem in report["problems"]:
                 log("  " + ("FAIL: " if not report["ok"] else "warning: ") + problem)
         except CalendarError as error:
+            ok = False
+            log("  FAIL: " + str(error))
+
+    log("Glyph")
+    if not glyph_root:
+        log("  off: no Glyph checkout, so listing mail is left unread until "
+            "GLYPH_DEPLOY_KEY is set")
+    else:
+        try:
+            repo = GlyphRepo.open(glyph_root)
+            if repo is None:
+                ok = False
+                log("  FAIL: " + glyph_root + " is not a git checkout")
+            else:
+                # ls-remote goes over SSH with the deploy key, so this proves the
+                # key authenticates -- without pushing anything to find out.
+                repo.already_proposed("listings/doctor-check")
+                log("  ok: deploy key reaches Glyph; " + str(len(repo.venues))
+                    + " venues in the registry")
+        except GlyphError as error:
             ok = False
             log("  FAIL: " + str(error))
 
