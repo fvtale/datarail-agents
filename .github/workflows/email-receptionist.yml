@@ -4,9 +4,11 @@ name: Email receptionist
 # pushes the result to datarail-site -- whose own deploy workflow then ships
 # the dashboard to IONOS.
 #
-# The agent is DRY RUN until the repository variable DATARAIL_AGENT_LIVE is set
-# to 'true'. Setting it to anything else, or deleting it, silences the agent on
-# the next run without a code change. That is the kill switch.
+# Scheduled runs do nothing until the repository variable DATARAIL_AGENT_LIVE is
+# set to 'true'; until then the agent only runs when started by hand, and a
+# manual run is a dry run unless 'live' is ticked too. Setting the variable to
+# anything else, or deleting it, silences the agent on the next run without a
+# code change. That is the kill switch.
 
 on:
   schedule:
@@ -50,7 +52,21 @@ jobs:
           MAIL_PASSWORD: ${{ secrets.DATARAIL_MAIL_PASSWORD }}
           SITE_TOKEN: ${{ secrets.DATARAIL_SITE_TOKEN }}
           GLYPH_KEY: ${{ secrets.GLYPH_DEPLOY_KEY }}
+          EVENT: ${{ github.event_name }}
+          LIVE_VAR: ${{ vars.DATARAIL_AGENT_LIVE }}
         run: |
+          # A scheduled run does nothing until the agent is switched on. A dry
+          # run never files or marks mail, so on a 30-minute cron it would
+          # re-read, re-classify and re-draft the same unread messages 48 times
+          # a day -- paying for every call, appending a duplicate interaction to
+          # each lead, and pushing (and so redeploying) datarail-site each time.
+          # Dry runs are for reading, so they are manual: Run workflow.
+          if [ "$EVENT" = "schedule" ] && [ "$LIVE_VAR" != "true" ]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Waiting to go live::Scheduled runs wait for DATARAIL_AGENT_LIVE=true. Use Run workflow for a dry run."
+            exit 0
+          fi
+
           # Written as if-statements rather than `[ -z "$X" ] && ...` because
           # under `bash -e` an AND-list whose first command returns 1 fails the
           # whole step -- which would mean the check breaks precisely when the

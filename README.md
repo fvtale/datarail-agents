@@ -161,7 +161,12 @@ it returns anything other than 401 or 403.
 
 ### 6. Go live
 
-Set the repository variable `DATARAIL_AGENT_LIVE` to `true`.
+Set the repository variable `DATARAIL_AGENT_LIVE` to `true`. That is also what
+starts the 30-minute schedule: until then, scheduled runs skip themselves and
+the agent only runs when you start it by hand. A dry run leaves mail unread on
+purpose, so on a schedule it would re-read and re-draft the same messages every
+half hour — paying for each call, duplicating each lead's history, and pushing
+datarail-site each time.
 
 To stop it: set it to anything else, or delete it. No deploy, no code change,
 effective on the next run.
