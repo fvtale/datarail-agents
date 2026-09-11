@@ -40,7 +40,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # This runs first, before any checkout, because the datarail-site
-      # checkout needs a token that may not exist yet either.
+      # checkout needs a deploy key that may not exist yet either.
       - name: Check for credentials
         id: creds
         # Until the secrets exist, skip instead of failing red -- the same way
@@ -102,9 +102,12 @@ jobs:
         uses: actions/checkout@v5
         with:
           repository: fvtale/datarail-site
-          # A fine-grained PAT with Contents: read and write on datarail-site.
-          # The default GITHUB_TOKEN cannot reach another repository.
-          token: ${{ secrets.DATARAIL_SITE_TOKEN }}
+          # The private half of an SSH deploy key with write access on
+          # datarail-site. The default GITHUB_TOKEN cannot reach another
+          # repository; a deploy key reaches exactly one, and unlike a PAT it
+          # never expires -- an expired token here would stop the receptionist
+          # answering anyone, since nothing runs without this checkout.
+          ssh-key: ${{ secrets.DATARAIL_SITE_TOKEN }}
           path: site
 
       - name: Check out Glyph

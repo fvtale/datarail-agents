@@ -64,17 +64,23 @@ both implicit TLS, authenticating with the full address as the username.
 | --- | --- |
 | `OPENAI_API_KEY` | An OpenAI API key |
 | `DATARAIL_MAIL_PASSWORD` | The mailbox password |
-| `DATARAIL_SITE_TOKEN` | A fine-grained PAT with **Contents: read and write** on `fvtale/datarail-site`, and nothing else |
+| `DATARAIL_SITE_TOKEN` | The private half of an SSH deploy key with **write access on `fvtale/datarail-site`** — despite the name, not a PAT |
 | `GOOGLE_SERVICE_ACCOUNT_JSON` | Optional. The whole downloaded service-account key file, pasted in. Without it the agent still answers and qualifies, it just never offers a time |
 | `GLYPH_DEPLOY_KEY` | Optional. The private half of an SSH deploy key with **write access on `fvtale/glyph`**. Without it, listing mail waits unread in the inbox — see [Listings for Glyph](#listings-for-glyph) |
 
 `DATARAIL_SITE_TOKEN` is needed because the default `GITHUB_TOKEN` cannot reach
-another repository. Scope it to that one repo only.
+another repository. A deploy key reaches exactly one, by construction, and it
+never expires. A PAT would: and since nothing runs without the datarail-site
+checkout, an expired token would stop the receptionist answering anyone until
+someone noticed and renewed it.
 
-A name collision worth knowing about: the Glyph repository *also* has a secret
-called `DATARAIL_SITE_TOKEN`, and there it holds an SSH deploy key, not a PAT.
-The two are not interchangeable — this workflow passes its value as `token:`,
-Glyph's passes its as `ssh-key:`. Do not copy one into the other.
+To make one: generate an SSH keypair with no passphrase; add the public half
+to `fvtale/datarail-site` → Settings → Deploy keys with **Allow write access**
+ticked; put the private half in this secret.
+
+The Glyph repository has a secret of the same name holding a *different*
+deploy key, for its own publish job. Keep them separate — each can then be
+revoked without taking the other system down with it.
 
 ### 2b. Google Calendar, for booking
 
