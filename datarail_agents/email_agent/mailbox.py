@@ -197,18 +197,25 @@ class Mailbox:
     def _quote(folder: str) -> str:
         return '"' + folder.replace('"', '\\"') + '"'
 
-    def unread(self, limit: int = 50) -> Iterator[InboundMessage]:
-        """Yield unseen messages from INBOX, oldest first.
+    def unread(self, limit: int = 50, newest_first: bool = False) -> Iterator[InboundMessage]:
+        """Yield unseen messages from INBOX, oldest first by default.
 
         Fetched with BODY.PEEK so reading does not mark anything as seen. The
         agent decides what counts as handled; IMAP should not decide for it.
+
+        newest_first takes the newest `limit` instead of the oldest, and hands
+        them over newest first. UID SEARCH returns them ascending, so the plain
+        slice is the oldest -- which is the wrong end entirely when the point is
+        to look at what just arrived. Each message is fetched as it is yielded,
+        so a caller that stops early pays for nothing beyond what it read.
         """
         self._imap.select("INBOX")
         status, data = self._imap.uid("SEARCH", None, "UNSEEN")
         if status != "OK" or not data or not data[0]:
             return
 
-        uids = data[0].split()[:limit]
+        found = data[0].split()
+        uids = list(reversed(found[-limit:])) if newest_first else found[:limit]
         for raw_uid in uids:
             uid = raw_uid.decode(_ENCODING)
             status, fetched = self._imap.uid("FETCH", uid, "(BODY.PEEK[])")
@@ -270,6 +277,30 @@ class Mailbox:
             return True
         except Exception:  # noqa: BLE001
             return False
+
+    def send_alert(self, *, to_address: str, subject: str, body: str) -> str:
+        """Tell the operator something happened. One way, never threaded.
+
+        Deliberately not a reply to anything: it starts no conversation, and it
+        carries Auto-Submitted: auto-generated so no responder on the receiving
+        side answers it back into this mailbox.
+        """
+        message = EmailMessage()
+        message["From"] = email.utils.formataddr(
+            ("DataRail receptionist", self.config.address)
+        )
+        message["To"] = to_address
+        message["Subject"] = subject
+        message["Date"] = email.utils.formatdate(localtime=True)
+        message_id = email.utils.make_msgid(domain="datarail.org")
+        message["Message-ID"] = message_id
+        message["Auto-Submitted"] = "auto-generated"
+        message.set_content(body)
+
+        with smtplib.SMTP_SSL(self.config.smtp_host, self.config.smtp_port) as server:
+            server.login(self.config.username, self.config.password)
+            server.send_message(message)
+        return message_id
 
     def send_reply(
         self,

@@ -25,6 +25,10 @@ on:
         description: "Only check credentials, models and mailbox, then stop"
         type: boolean
         default: false
+      limit:
+        description: "Only the N most recent messages that need a decision (blank = all)"
+        type: string
+        default: ""
 
 # One run at a time. Two passes over the same INBOX would both read the same
 # unread mail and both reply to it.
@@ -142,6 +146,7 @@ jobs:
           EVENT: ${{ github.event_name }}
           LIVE_VAR: ${{ vars.DATARAIL_AGENT_LIVE }}
           LIVE_INPUT: ${{ github.event.inputs.live }}
+          LIMIT_INPUT: ${{ github.event.inputs.limit }}
         run: |
           # A manual run can send only if it asked to AND the variable allows
           # it. Two switches, so neither one alone starts the agent talking.
@@ -151,6 +156,15 @@ jobs:
           else
             echo "flag=" >> "$GITHUB_OUTPUT"
             echo "::notice title=Dry run::Nothing will be sent. Set the repository variable DATARAIL_AGENT_LIVE to 'true' to go live."
+          fi
+
+          # Only a plain positive number becomes a flag. This value ends up on a
+          # command line, so anything else is dropped rather than passed along.
+          if printf '%s' "$LIMIT_INPUT" | grep -qE '^[1-9][0-9]*$'; then
+            echo "limit=--limit $LIMIT_INPUT" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Limited::Only the $LIMIT_INPUT most recent messages that need a decision."
+          else
+            echo "limit=" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Doctor
@@ -165,6 +179,7 @@ jobs:
           GOOGLE_CALENDAR_ID: ${{ vars.GOOGLE_CALENDAR_ID }}
           DATARAIL_TIMEZONE: ${{ vars.DATARAIL_TIMEZONE }}
           GLYPH_ROOT: ${{ steps.creds.outputs.glyph == 'true' && 'glyph' || '' }}
+          DATARAIL_ALERT_ADDRESS: ${{ secrets.DATARAIL_ALERT_ADDRESS }}
         run: python -m datarail_agents.email_agent.run --doctor --site site
 
       - name: Run the receptionist
@@ -182,7 +197,8 @@ jobs:
           DATARAIL_MAX_SENDS_PER_RUN: ${{ vars.DATARAIL_MAX_SENDS_PER_RUN }}
           DATARAIL_MAX_LISTINGS_PER_RUN: ${{ vars.DATARAIL_MAX_LISTINGS_PER_RUN }}
           GLYPH_ROOT: ${{ steps.creds.outputs.glyph == 'true' && 'glyph' || '' }}
-        run: python -m datarail_agents.email_agent.run --site site ${{ steps.mode.outputs.flag }}
+          DATARAIL_ALERT_ADDRESS: ${{ secrets.DATARAIL_ALERT_ADDRESS }}
+        run: python -m datarail_agents.email_agent.run --site site ${{ steps.mode.outputs.flag }} ${{ steps.mode.outputs.limit }}
 
       - name: Rebuild the dashboard
         if: steps.creds.outputs.ready == 'true' && github.event.inputs.doctor != 'true'

@@ -67,6 +67,7 @@ both implicit TLS, authenticating with the full address as the username.
 | `DATARAIL_SITE_TOKEN` | The private half of an SSH deploy key with **write access on `fvtale/datarail-site`** — despite the name, not a PAT |
 | `GOOGLE_SERVICE_ACCOUNT_JSON` | Optional. The whole downloaded service-account key file, pasted in. Without it the agent still answers and qualifies, it just never offers a time |
 | `GLYPH_DEPLOY_KEY` | Optional. The private half of an SSH deploy key with **write access on `fvtale/glyph`**. Without it, listing mail waits unread in the inbox — see [Listings for Glyph](#listings-for-glyph) |
+| `DATARAIL_ALERT_ADDRESS` | Optional. Where to send a copy of every reply the agent sends. A secret rather than a variable **because this repository is public** and Actions prints variables into the run log, where a personal address would then be public too |
 
 `DATARAIL_SITE_TOKEN` is needed because the default `GITHUB_TOKEN` cannot reach
 another repository. A deploy key reaches exactly one, by construction, and it
@@ -144,6 +145,20 @@ loads. It touches no mail and sends nothing.
 Model names move between generations. If doctor reports a model is unavailable,
 set `OPENAI_MODEL` to one the key can reach — that is the whole fix.
 
+### 3b. Get told when it answers someone
+
+Set `DATARAIL_ALERT_ADDRESS` to a mailbox you actually read, and every reply the
+agent sends is copied to you: who wrote in, what they asked, what went out, the
+lead's score, and whether a call was booked. It opens by saying nothing is
+needed — it is a record, not a task.
+
+It is one-way and carries `Auto-Submitted: auto-generated`, so nothing answers
+it back. Setting it to `contact@datarail.org` is refused by doctor: the alert
+would land in the very inbox the agent reads, which is the loop.
+
+A failed alert never fails a run. The reply has already gone by then, and losing
+the run there would leave the mail unfiled and answer it twice on the next pass.
+
 ### 4. Watch it dry-run
 
 Run the workflow again without **live**. It does everything except send, and
@@ -152,6 +167,11 @@ to catch a voice that is wrong before a client sees it.
 
 Nothing is filed or marked during a dry run, so the same mail is still waiting
 when you go live.
+
+With a backlog, put a number in **limit**. It takes that many of the most recent
+messages that *need a decision* — newest first, with machine and bulk mail
+skipped for free and not counted — and leaves the rest unread. `limit: 5` is a
+good first read: enough to judge the voice, small enough to read properly.
 
 ### 5. Protect the dashboard
 
@@ -281,6 +301,7 @@ export OPENAI_API_KEY=sk-...
 export DATARAIL_MAIL_PASSWORD=...
 python -m datarail_agents.email_agent.run --doctor --site ../datarail-site
 python -m datarail_agents.email_agent.run --site ../datarail-site   # dry run
+python -m datarail_agents.email_agent.run --site ../datarail-site --limit 5
 ```
 
 `--live` is the only way to send. The environment variable can silence the

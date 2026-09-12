@@ -217,6 +217,13 @@ class Config:
     operator_email: str = "contact@datarail.org"
     signature_name: str = "DataRail"
 
+    # Where to tell the operator that a reply went out. Empty means no alerts.
+    #
+    # Read from a secret rather than a variable on purpose: this repository is
+    # public, and Actions prints variables into the run log, where a personal
+    # address would then be public too. Secrets are masked there.
+    alert_address: str = ""
+
     # Whether replies say they were written by an assistant.
     #
     # Defaults to on for three reasons: the EU AI Act requires telling people
@@ -253,4 +260,5 @@ class Config:
             ),
             max_listings_per_run=int(_env("DATARAIL_MAX_LISTINGS_PER_RUN", "5")),
             disclose_agent=_flag("DATARAIL_DISCLOSE_AGENT", True),
+            alert_address=_env("DATARAIL_ALERT_ADDRESS", ""),
         )

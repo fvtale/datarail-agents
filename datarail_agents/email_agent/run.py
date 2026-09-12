@@ -45,6 +45,11 @@ from .mailbox import InboundMessage, Mailbox
 LEADS_RELATIVE_PATH = os.path.join("leads", "data.json")
 RUNLOG_RELATIVE_PATH = os.path.join("leads", "runlog.json")
 
+# How deep to look when --limit asks for the N most recent messages that need a
+# decision. Newsletters and machine mail are skipped for free and do not count
+# towards N, so the scan has to be allowed to run past them -- but not forever.
+SCAN_DEPTH = 200
+
 
 def log(message: str) -> None:
     """Print with a flush.
@@ -57,9 +62,14 @@ def log(message: str) -> None:
 
 
 class Runner:
-    def __init__(self, config: Config, site_root: str, glyph_root: str = ""):
+    def __init__(self, config: Config, site_root: str, glyph_root: str = "",
+                 limit: int = 0):
         self.config = config
         self.site_root = site_root
+        # 0 means the whole inbox. Anything else is "the N most recent messages
+        # that need a decision", counted after the free structural filter.
+        self.limit = max(0, int(limit or 0))
+        self.considered = 0
         self.leads_path = os.path.join(site_root, LEADS_RELATIVE_PATH)
         self.store = LeadStore.open(self.leads_path)
         self.brain = Brain(config.brain)
@@ -101,13 +111,27 @@ class Runner:
         log("")
 
         with Mailbox(self.config.mailbox) as mailbox:
-            messages = list(mailbox.unread())
-            log("Found " + str(len(messages)) + " unread message(s).")
+            waiting = mailbox.count_unread()
+            if self.limit:
+                log("Found " + str(waiting) + " unread. Taking the " + str(self.limit)
+                    + " most recent that need a decision -- machine and bulk mail "
+                    + "is skipped for free and does not count.")
+            else:
+                log("Found " + str(waiting) + " unread message(s).")
             log("")
 
-            for message in messages:
+            # Each message is fetched as the loop reaches it, so stopping early
+            # costs nothing for the mail left behind.
+            for message in mailbox.unread(
+                limit=SCAN_DEPTH if self.limit else 50,
+                newest_first=bool(self.limit),
+            ):
+                if self.limit and self.considered >= self.limit:
+                    log("Limit reached. The rest stay unread for the next run.")
+                    break
                 try:
-                    self._handle(mailbox, message)
+                    if self._handle(mailbox, message):
+                        self.considered += 1
                 except Exception as error:  # noqa: BLE001 - one bad message must
                     # not take down the run; the rest of the mailbox still needs
                     # answering, and this one is left unread to retry.
@@ -116,6 +140,9 @@ class Runner:
                     self.results["error"].append(
                         {"from": message.sender_email, "error": str(error)}
                     )
+                    # Counted: a message that breaks every time must not push the
+                    # scan deeper on each run while it looks for its quota.
+                    self.considered += 1
 
         self.store.save()
         self._write_runlog()
@@ -124,7 +151,14 @@ class Runner:
 
     # ------------------------------------------------------------------
 
-    def _handle(self, mailbox: Mailbox, message: InboundMessage) -> None:
+    def _handle(self, mailbox: Mailbox, message: InboundMessage) -> bool:
+        """Deal with one message. Returns whether it needed a decision.
+
+        False means the structural filter recognised it as machine or bulk mail
+        and it cost nothing to dismiss, so --limit does not count it. Everything
+        else counts, including mail the classifier then files in silence: that
+        one already spent a model call.
+        """
         who = message.sender_email or "(no sender)"
         log("- " + who + " | " + (message.subject or "(no subject)")[:60])
 
@@ -139,7 +173,7 @@ class Runner:
             log("    ignored: " + structural.reason)
             self._file(mailbox, message, self.config.mailbox.ignored_folder)
             self.results["ignored"].append({"from": who, "reason": structural.reason})
-            return
+            return False
 
         classification = self.brain.classify(
             sender=message.sender_email,
@@ -152,7 +186,7 @@ class Runner:
         # a venue sending its dates must not get a consulting pitch back.
         if classification == "listing":
             self._handle_listing(mailbox, message)
-            return
+            return True
 
         contact = Contact(
             name=message.sender_name,
@@ -175,7 +209,7 @@ class Runner:
             log("    no reply: " + decision.reason)
             self._file(mailbox, message, self.config.mailbox.ignored_folder)
             self.results["ignored"].append({"from": who, "reason": decision.reason})
-            return
+            return True
 
         # From here on this is a real enquiry and gets a lead record whatever
         # happens to the draft.
@@ -225,17 +259,19 @@ class Runner:
             ]
             self._file(mailbox, message, self.config.mailbox.review_folder)
             self.results["review"].append({"from": who, "reason": verdict.reason})
-            return
+            return True
 
         subject = draft.subject or _reply_subject(message.subject)
 
         if self.config.dry_run:
             log("    would send: " + subject)
             log("    " + body.replace("\n", "\n    ")[:600])
+            if self.config.alert_address:
+                log("    would alert " + self.config.alert_address)
             self.results["replied"].append({"from": who, "subject": subject, "dry_run": True})
             # Nothing is filed or marked in a dry run: the message stays unread
             # so the first live run still answers it.
-            return
+            return True
 
         sent_id = mailbox.send_reply(
             to_address=message.sender_email,
@@ -259,6 +295,38 @@ class Runner:
         ))
         self._file(mailbox, message, self.config.mailbox.processed_folder)
         self.results["replied"].append({"from": who, "subject": subject, "score": lead.score})
+        self._alert(mailbox, message, subject, body, booked=bool(ics), score=lead.score)
+        return True
+
+    def _alert(self, mailbox: Mailbox, message: InboundMessage, subject: str,
+               body: str, *, booked: bool, score: int) -> None:
+        """Tell the operator a reply went out. Never breaks the run.
+
+        The reply has already been sent by the time this runs, so a failure here
+        must not raise: the client has their answer either way, and letting the
+        run die would leave the message unfiled and answer it twice on the next
+        pass. A failed alert is a warning in the log, nothing more.
+        """
+        address = self.config.alert_address.strip()
+        if not address:
+            return
+        if address.lower() == self.config.mailbox.address.strip().lower():
+            # Alerting the mailbox it reads would put the alert back in the
+            # inbox, to be classified and possibly answered. That is the loop.
+            log("    not alerting: the alert address is the mailbox itself")
+            return
+        try:
+            mailbox.send_alert(
+                to_address=address,
+                subject="[DataRail] Replied to " + (message.sender_email or "someone"),
+                body=alert_text(
+                    message=message, subject=subject, body=body,
+                    booked=booked, score=score,
+                ),
+            )
+            log("    alerted " + address)
+        except Exception as error:  # noqa: BLE001 - see the docstring
+            log("    warning: could not send the alert: " + str(error))
 
     # ------------------------------------------------------------------
 
@@ -543,6 +611,31 @@ class Runner:
         log("Leads on file: " + str(len(self.store)))
 
 
+def alert_text(*, message, subject: str, body: str, booked: bool, score: int) -> str:
+    """What the operator's copy of an outgoing reply says.
+
+    A copy for the record rather than a task: it opens by saying nothing is
+    needed, because an alert that reads like a to-do turns into one.
+    """
+    sender = message.sender_email or "(no sender)"
+    if message.sender_name:
+        sender = message.sender_name + " <" + sender + ">"
+
+    lines = [
+        "The receptionist has answered a message. Nothing is needed from you --",
+        "this is your copy of what went out.",
+        "",
+        "From:    " + sender,
+        "About:   " + (message.subject or "(no subject)"),
+        "Sent as: " + subject,
+        "Lead:    scored " + str(score) + " out of 100",
+    ]
+    if booked:
+        lines.append("Booked:  intro call confirmed, invitation attached to the reply")
+    lines += ["", "---- what was sent ----", "", body.strip(), ""]
+    return "\n".join(lines)
+
+
 def _reply_subject(original: str) -> str:
     original = (original or "").strip() or "Your enquiry"
     if original.lower().startswith("re:"):
@@ -572,6 +665,14 @@ def main(argv=None) -> int:
         default=os.environ.get("GLYPH_ROOT", ""),
         help="Path to a fvtale/glyph checkout. Without one, listing intake is off.",
     )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help="Only handle the N most recent messages that need a decision, "
+             "newest first. Machine and bulk mail is skipped without counting. "
+             "0, the default, means the whole inbox oldest first.",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -590,7 +691,7 @@ def main(argv=None) -> int:
         return _doctor(config, args.site, args.glyph)
 
     try:
-        Runner(config, args.site, glyph_root=args.glyph).run()
+        Runner(config, args.site, glyph_root=args.glyph, limit=args.limit).run()
     except BrainError as error:
         log("Model error: " + str(error))
         return 3
@@ -657,6 +758,19 @@ def _doctor(config: Config, site_root: str, glyph_root: str = "") -> int:
         except CalendarError as error:
             ok = False
             log("  FAIL: " + str(error))
+
+    log("Alerts")
+    if not config.alert_address:
+        log("  off: DATARAIL_ALERT_ADDRESS is not set, so nothing is sent when a "
+            "reply goes out")
+    elif config.alert_address.strip().lower() == config.mailbox.address.strip().lower():
+        ok = False
+        log("  FAIL: the alert address is the mailbox itself, which would put "
+            "every alert back in the inbox")
+    else:
+        # Not printed. It is a secret precisely so it stays out of a public log,
+        # and Actions would mask it here anyway.
+        log("  ok: a copy of every reply goes to the alert address")
 
     log("Glyph")
     if not glyph_root:
