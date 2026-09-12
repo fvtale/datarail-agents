@@ -70,6 +70,9 @@ class Runner:
         # that need a decision", counted after the free structural filter.
         self.limit = max(0, int(limit or 0))
         self.considered = 0
+        # Messages the model actually managed to label. Zero of these alongside
+        # errors means the failure is systemic rather than one bad message.
+        self.classified = 0
         self.leads_path = os.path.join(site_root, LEADS_RELATIVE_PATH)
         self.store = LeadStore.open(self.leads_path)
         self.brain = Brain(config.brain)
@@ -180,6 +183,7 @@ class Runner:
             subject=message.subject,
             body=message.body,
         )
+        self.classified += 1
         log("    classified: " + classification)
 
         # Listings for Glyph never reach the reply path. They are not leads, and
@@ -691,7 +695,17 @@ def main(argv=None) -> int:
         return _doctor(config, args.site, args.glyph)
 
     try:
-        Runner(config, args.site, glyph_root=args.glyph, limit=args.limit).run()
+        runner = Runner(config, args.site, glyph_root=args.glyph, limit=args.limit)
+        results = runner.run()
+        if results["error"] and runner.classified == 0:
+            # Not one message could be labelled, and several broke. That is an
+            # outage -- no credits, a withdrawn key, a model that moved -- not a
+            # bad message, and a green run every thirty minutes would hide it
+            # for as long as it lasted.
+            log("")
+            log("Every message that needed a decision ended in an error, and "
+                "none were classified. Failing the run.")
+            return 4
     except BrainError as error:
         log("Model error: " + str(error))
         return 3

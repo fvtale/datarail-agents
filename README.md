@@ -142,6 +142,10 @@ This verifies the API key, that the configured models actually exist for that
 key, that the mailbox accepts the credentials, and that the knowledge base
 loads. It touches no mail and sends nothing.
 
+It also spends one tiny completion, on purpose. Listing models does not touch
+billing, so an account with no credits left passes every other check and then
+fails on the first real message — which is exactly how this was found.
+
 Model names move between generations. If doctor reports a model is unavailable,
 set `OPENAI_MODEL` to one the key can reach — that is the whole fix.
 
@@ -221,6 +225,9 @@ polite request in a prompt is not a rule.
   anything carrying automation headers. Sends `Auto-Submitted: auto-replied` so
   other well-behaved responders do not reply back.
 - **Has a ceiling.** 10 sends per run, 2 per conversation per day.
+- **Goes red when it cannot think.** If nothing could be classified and messages
+  errored, the run fails rather than finishing green. A thirty-minute cron that
+  looks healthy while the model is unreachable is how an outage lasts a week.
 - **Leaves a record.** Every decision, including every decision *not* to reply
   and the reason, goes to `leads/runlog.json`.
 

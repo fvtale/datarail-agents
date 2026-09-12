@@ -175,6 +175,22 @@ class Brain:
                 report["problems"].append(
                     label + "=" + name + " is not available to this API key"
                 )
+        if not report["ok"]:
+            return report
+
+        # Listing models does not touch billing, so a key on an account with no
+        # credits passes every check above and then fails on the first real
+        # message. One tiny completion is the only way to find that out here
+        # rather than in the mailbox.
+        try:
+            self._complete_json(
+                model=self.config.classifier_model,
+                system='Answer only with the JSON {"ok": true}.',
+                user="ping",
+            )
+        except Exception as error:  # noqa: BLE001 - SDK raises many types
+            report["ok"] = False
+            report["problems"].append("a test completion failed: " + str(error))
         return report
 
     # ------------------------------------------------------------------
